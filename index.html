@@ -70,7 +70,6 @@
             }
         ];
 
-        // Web Audio Synthesizer สำหรับเสียงเอฟเฟกต์
         const playSound = (type) => {
             try {
                 const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -114,7 +113,7 @@
         };
 
         function App() {
-            const [view, setView] = useState('HOME'); // HOME, HOST_LOBBY, HOST_GAME, PLAYER_JOIN, PLAYER_GAME, ADMIN_LOGIN, ADMIN_QUIZ_LIST, ADMIN_QUIZ_EDIT
+            const [view, setView] = useState('HOME');
             const [quizzes, setQuizzes] = useState(() => {
                 const saved = localStorage.getItem('company_kahoot_quizzes');
                 return saved ? JSON.parse(saved) : DEFAULT_QUIZZES;
@@ -129,7 +128,7 @@
             const [showImportModal, setShowImportModal] = useState(false);
             const [importJsonText, setImportJsonText] = useState('');
             const [googleScriptUrl, setGoogleScriptUrl] = useState(() => {
-                return localStorage.getItem('kahoot_google_script_url') || 'https://script.google.com/macros/s/AKfycbzXMe31YiBlE698tvRnsfvXPexD4j4fBaJyJ4ZAx2gT_D67yu76P_owUks3bUBHC00M/exec';
+                return localStorage.getItem('kahoot_google_script_url') || 'https://script.google.com/macros/s/AKfycbw-5N50clAOoW-CPQAW90UlKgmq0_9VFMZEoTb6HQrmeTAtSWTXLBJIwhf96g6t5uxc/exec';
             });
             const [isSyncingDrive, setIsSyncingDrive] = useState(false);
             const [driveSyncMessage, setDriveSyncMessage] = useState('');
@@ -143,6 +142,8 @@
             const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
             const [timeLeft, setTimeLeft] = useState(20);
             const [autoNextTime, setAutoNextTime] = useState(5);
+            const [isSavingResults, setIsSavingResults] = useState(false);
+            const [saveResultsMessage, setSaveResultsMessage] = useState('');
 
             // Player State
             const [playerName, setPlayerName] = useState('');
@@ -150,7 +151,6 @@
             const [myPlayerId, setMyPlayerId] = useState('');
             const [hasAnswered, setHasAnswered] = useState(false);
             const [selectedOption, setSelectedOption] = useState(null);
-            const [currentQuestionData, setCurrentQuestionData] = useState(null);
 
             // Real-time Broadcast Sync Channel
             const channelRef = useRef(null);
@@ -172,9 +172,6 @@
                         setCurrentQuestionIndex(data.currentQuestionIndex);
                         setTimeLeft(data.timeLeft);
                         if (data.autoNextTime !== undefined) setAutoNextTime(data.autoNextTime);
-                        if (data.questionData) {
-                            setCurrentQuestionData(data.questionData);
-                        }
                         if (data.gameState === 'QUESTION') {
                             setHasAnswered(false);
                             setSelectedOption(null);
@@ -182,12 +179,14 @@
                     } else if (data.type === 'PLAYER_JOINED' && view.startsWith('HOST')) {
                         setPlayers(prev => {
                             if (prev.find(p => p.name === data.name)) return prev;
-                            return [...prev, { id: data.id, name: data.name, score: 0, lastAnswer: null, answerTime: 0 }];
+                            return [...prev, { id: data.id, name: data.name, score: 0, lastAnswer: null, answerTime: 0, answersHistory: {} }];
                         });
                     } else if (data.type === 'PLAYER_SUBMIT_ANSWER' && view.startsWith('HOST')) {
                         setPlayers(prev => prev.map(p => {
                             if (p.id === data.playerId) {
-                                return { ...p, lastAnswer: data.optionIndex, answerTime: data.timeTaken };
+                                const qIdx = data.questionIndex !== undefined ? data.questionIndex : currentQuestionIndex;
+                                const updatedHistory = { ...(p.answersHistory || {}), [qIdx]: data.optionIndex };
+                                return { ...p, lastAnswer: data.optionIndex, answerTime: data.timeTaken, answersHistory: updatedHistory };
                             }
                             return p;
                         }));
@@ -197,23 +196,51 @@
                 return () => {
                     if (channelRef.current) channelRef.current.close();
                 };
-            }, [view]);
+            }, [view, currentQuestionIndex]);
 
-            // บรอดแคสต์สถานะเกมไปยังผู้เล่น
-            const broadcastGameState = (newState, questionIdx, timer, autoNext = 5) => {
+            const broadcastGameState = (newState, questionIdx, timer, autoNextSecs = 5, customPlayers = null) => {
                 if (channelRef.current) {
                     channelRef.current.postMessage({
                         type: 'SYNC_GAME',
                         gameState: newState,
                         currentQuestionIndex: questionIdx,
                         timeLeft: timer,
-                        autoNextTime: autoNext,
-                        questionData: activeQuiz?.questions[questionIdx] || null
+                        autoNextTime: autoNextSecs,
+                        leaderboard: customPlayers || players
                     });
                 }
             };
 
-            // --- ADMIN HANDLERS ---
+            const handleSaveResultsToGoogleDrive = async (overridePlayers = null) => {
+                if (!googleScriptUrl || !activeQuiz) return;
+                setIsSavingResults(true);
+                setSaveResultsMessage('⏳ กำลังสร้างไฟล์ Google Sheet สรุปผลคะแนนลง Google Drive...');
+                try {
+                    const targetPlayers = overridePlayers || players;
+                    const payload = {
+                        action: 'SAVE_RESULTS',
+                        quizTitle: activeQuiz.title,
+                        questions: activeQuiz.questions,
+                        players: targetPlayers.map(p => ({
+                            name: p.name,
+                            score: p.score,
+                            playerAnswers: p.answersHistory || {}
+                        }))
+                    };
+                    await fetch(googleScriptUrl, {
+                        method: 'POST',
+                        mode: 'no-cors',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    setSaveResultsMessage('✅ บันทึกสรุปผลเป็น Google Sheet ลง Google Drive เรียบร้อยแล้ว!');
+                } catch (err) {
+                    setSaveResultsMessage('❌ ไม่สามารถบันทึกสรุปผลลง Google Drive ได้');
+                } finally {
+                    setIsSavingResults(false);
+                }
+            };
+
             const handleAdminLogin = (e) => {
                 e.preventDefault();
                 if (passcodeInput.trim() === ADMIN_PASSCODE.trim()) {
@@ -251,7 +278,6 @@
                 }
             };
 
-            // --- BACKUP, RESTORE & GOOGLE DRIVE HANDLERS ---
             const handleExportBackup = () => {
                 const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(quizzes, null, 2));
                 const downloadAnchor = document.createElement('a');
@@ -319,7 +345,6 @@
                 }
             };
 
-            // --- QUESTION MANAGER HANDLERS ---
             const handleAddQuestion = () => {
                 if (!editingQuiz) return;
                 const newQuestion = {
@@ -372,7 +397,6 @@
                 }
             };
 
-            // --- HOST GAME LOGIC ---
             const startHostLobby = (quiz) => {
                 const randomPin = Math.floor(100000 + Math.random() * 900000).toString();
                 setActiveQuiz(quiz);
@@ -416,6 +440,7 @@
                                 const randomAns = Math.floor(Math.random() * 4);
                                 p.lastAnswer = randomAns;
                                 p.answerTime = Math.round(timeLeft * (0.3 + Math.random() * 0.6));
+                                p.answersHistory = { ...(p.answersHistory || {}), [currentQuestionIndex]: randomAns };
                             }
                         }
                     });
@@ -460,19 +485,21 @@
                 setAutoNextTime(5);
                 const currentQ = activeQuiz.questions[currentQuestionIndex];
                 
-                // คำนวณคะแนนผู้เล่นทุกคน
-                setPlayers(prev => prev.map(p => {
-                    if (p.lastAnswer === currentQ.correctOption) {
-                        const remTime = p.answerTime !== undefined && p.answerTime !== null ? p.answerTime : 1;
-                        const totalLimit = currentQ.timeLimit || 20;
-                        const timeRatio = Math.min(1, Math.max(0.1, remTime / totalLimit));
-                        const earned = Math.round(currentQ.points * timeRatio);
-                        return { ...p, score: p.score + earned };
-                    }
-                    return p;
-                }));
-
-                broadcastGameState('RESULT', currentQuestionIndex, 0, 5);
+                setPlayers(prev => {
+                    const updated = prev.map(p => {
+                        if (p.lastAnswer === currentQ.correctOption) {
+                            const remTime = p.answerTime !== undefined && p.answerTime !== null ? p.answerTime : 1;
+                            const totalLimit = currentQ.timeLimit || 20;
+                            const timeRatio = Math.min(1, Math.max(0.1, remTime / totalLimit));
+                            const earned = Math.round(currentQ.points * timeRatio);
+                            return { ...p, score: p.score + earned, lastEarned: earned, isCorrect: true };
+                        }
+                        return { ...p, lastEarned: 0, isCorrect: false };
+                    });
+                    const sorted = [...updated].sort((a, b) => b.score - a.score);
+                    broadcastGameState('RESULT', currentQuestionIndex, 0, 5, sorted);
+                    return sorted;
+                });
             };
 
             const goToNextQuestion = () => {
@@ -488,10 +515,12 @@
                     setGameState('FINISHED');
                     broadcastGameState('FINISHED', currentQuestionIndex, 0, 0);
                     confetti({ particleCount: 150, spread: 80, origin: { y: 0.6 } });
+                    setTimeout(() => {
+                        handleSaveResultsToGoogleDrive();
+                    }, 500);
                 }
             };
 
-            // --- PLAYER JOIN HANDLERS ---
             const handlePlayerJoin = (e) => {
                 e.preventDefault();
                 if (!playerName.trim() || !joinedPin.trim()) return alert('กรุณากรอก PIN และชื่อของคุณ');
@@ -521,7 +550,8 @@
                         type: 'PLAYER_SUBMIT_ANSWER',
                         playerId: myPlayerId,
                         optionIndex: optionIndex,
-                        timeTaken: timeLeft
+                        timeTaken: timeLeft,
+                        questionIndex: currentQuestionIndex
                     });
                 }
             };
@@ -608,7 +638,6 @@
                                     </div>
                                 </div>
 
-                                {/* Preset Quizzes Selector for Host */}
                                 <div className="bg-slate-800/40 p-4 rounded-xl border border-slate-800 text-left">
                                     <h4 className="font-bold text-slate-300 mb-3 text-sm">เลือกชุดคำถามสำหรับวิทยากร:</h4>
                                     <div className="space-y-2">
@@ -630,7 +659,7 @@
                             </div>
                         )}
 
-                        {/* 2. ADMIN LOGIN MODAL / VIEW */}
+                        {/* 2. ADMIN LOGIN VIEW */}
                         {view === 'ADMIN_LOGIN' && (
                             <div className="max-w-md mx-auto bg-slate-800 border border-slate-700 p-8 rounded-2xl shadow-2xl">
                                 <div className="text-center mb-6">
@@ -676,6 +705,7 @@
                         )}
 
                         {/* 3. ADMIN QUIZ LIST */}
+                        {}
                         {view === 'ADMIN_QUIZ_LIST' && (
                             <div className="max-w-4xl mx-auto space-y-6">
                                 <div className="flex flex-wrap justify-between items-center gap-4">
@@ -702,7 +732,6 @@
                                     </div>
                                 </div>
 
-                                {/* GOOGLE DRIVE SYNC CARD */}
                                 <div className="bg-slate-800/80 border border-purple-500/40 p-5 rounded-2xl space-y-3">
                                     <div className="flex justify-between items-center">
                                         <h3 className="font-bold text-purple-300 text-sm flex items-center gap-2">
@@ -773,6 +802,7 @@
                         )}
 
                         {/* 4. ADMIN EDIT QUIZ & QUESTIONS MANAGER */}
+                        {}
                         {view === 'ADMIN_QUIZ_EDIT' && editingQuiz && (
                             <div className="max-w-4xl mx-auto space-y-6">
                                 <div className="flex justify-between items-center border-b border-slate-800 pb-4">
@@ -789,7 +819,6 @@
                                     </button>
                                 </div>
 
-                                {/* Quiz Info Form */}
                                 <div className="bg-slate-800/60 p-4 rounded-xl border border-slate-700 space-y-3">
                                     <div>
                                         <label className="block text-xs font-semibold text-slate-400 mb-1">ชื่อชุดคำถาม</label>
@@ -819,7 +848,6 @@
                                     </div>
                                 </div>
 
-                                {/* Questions List */}
                                 <div className="space-y-6">
                                     <h3 className="font-bold text-slate-300">รายการคำถามทั้งหมด ({editingQuiz.questions.length} ข้อ)</h3>
                                     
@@ -857,7 +885,6 @@
                                                 />
                                             </div>
 
-                                            {/* Options Grid */}
                                             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                                 {q.options.map((opt, optIndex) => (
                                                     <div key={optIndex} className="flex items-center gap-2">
@@ -914,6 +941,7 @@
                         )}
 
                         {/* 5. HOST LOBBY */}
+                        {}
                         {view === 'HOST_LOBBY' && (
                             <div className="text-center space-y-8">
                                 <div className="bg-slate-800 border-2 border-purple-500/40 p-6 rounded-3xl inline-block max-w-xl w-full shadow-2xl">
@@ -958,10 +986,10 @@
                             </div>
                         )}
 
-                        {/* 6. HOST GAME VIEW (SHOW QUESTION & LEADERBOARD) */}
+                        {/* 6. HOST GAME VIEW */}
+                        {}
                         {view === 'HOST_GAME' && activeQuiz && (
                             <div className="space-y-6">
-                                {/* Question Progress & Timer */}
                                 <div className="flex justify-between items-center">
                                     <span className="font-bold text-purple-300">
                                         คำถามข้อที่ {currentQuestionIndex + 1} / {activeQuiz.questions.length}
@@ -971,14 +999,12 @@
                                     </div>
                                 </div>
 
-                                {/* Question Title Card */}
                                 <div className="bg-slate-800 border-2 border-slate-700 p-8 rounded-3xl text-center shadow-xl">
                                     <h2 className="text-2xl md:text-3xl font-black">
                                         {activeQuiz.questions[currentQuestionIndex]?.questionText}
                                     </h2>
                                 </div>
 
-                                {/* Option Grid Preview */}
                                 <div className="grid grid-cols-2 gap-4">
                                     {activeQuiz.questions[currentQuestionIndex]?.options.map((opt, idx) => (
                                         <div 
@@ -995,25 +1021,35 @@
                                     ))}
                                 </div>
 
-                                {/* Host Action Controls */}
                                 {gameState === 'RESULT' && (
-                                    <div className="bg-slate-800 p-6 rounded-2xl border border-slate-700 text-center space-y-4">
-                                        <div className="flex justify-between items-center bg-purple-950/80 p-3 rounded-xl border border-purple-500/30">
-                                            <h3 className="text-xl font-bold text-yellow-400">สรุปคะแนนหลังจบข้อนี้</h3>
-                                            <span className="text-sm font-bold bg-purple-600 text-white px-3 py-1 rounded-full animate-pulse">
-                                                ⏱️ ข้อถัดไปใน {autoNextTime} วินาที...
+                                    <div className="bg-slate-800 p-6 rounded-3xl border border-slate-700 text-center space-y-5 shadow-2xl">
+                                        <div className="flex justify-between items-center bg-purple-950/80 p-4 rounded-2xl border border-purple-500/30">
+                                            <div className="text-left">
+                                                <h3 className="text-xl font-black text-yellow-400">📊 ตารางสรุปคะแนนสะสม (จากสูงไปต่ำ)</h3>
+                                                <p className="text-xs text-slate-400 mt-0.5">คะแนนสะสมจะถูกคำนวณตามความถูกต้องและความเร็วในการตอบ</p>
+                                            </div>
+                                            <span className="text-sm font-bold bg-purple-600 text-white px-4 py-1.5 rounded-full animate-pulse border border-purple-400 shrink-0">
+                                                ⏱️ เริ่มข้อถัดไปใน {autoNextTime} วินาที...
                                             </span>
                                         </div>
-                                        <div className="flex justify-center gap-4 text-sm">
-                                            {players.sort((a,b) => b.score - a.score).slice(0, 3).map((p, rank) => (
-                                                <div key={p.id} className="bg-slate-900 px-4 py-2 rounded-xl">
-                                                    #{rank+1} {p.name}: <span className="text-yellow-400 font-bold">{p.score}</span> คะแนน
+
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-w-3xl mx-auto">
+                                            {players.sort((a,b) => b.score - a.score).map((p, rank) => (
+                                                <div key={p.id} className={`flex justify-between items-center p-3.5 rounded-xl font-bold text-sm ${
+                                                    rank === 0 ? 'bg-yellow-500/20 text-yellow-300 border border-yellow-500/40 text-base' : 'bg-slate-900 text-slate-300'
+                                                }`}>
+                                                    <div className="flex items-center gap-2">
+                                                        <span>{rank === 0 ? '🥇' : rank === 1 ? '🥈' : rank === 2 ? '🥉' : `#${rank + 1}`}</span>
+                                                        <span>{p.name}</span>
+                                                    </div>
+                                                    <span className="text-yellow-400 font-extrabold">{p.score} คะแนน</span>
                                                 </div>
                                             ))}
                                         </div>
+
                                         <button 
                                             onClick={goToNextQuestion}
-                                            className="bg-purple-600 hover:bg-purple-500 font-bold px-6 py-3 rounded-xl">
+                                            className="bg-purple-600 hover:bg-purple-500 text-white font-bold px-8 py-3 rounded-xl shadow-lg transition active:scale-95">
                                             เริ่มข้อถัดไปทันที ➔
                                         </button>
                                     </div>
@@ -1022,6 +1058,13 @@
                                 {gameState === 'FINISHED' && (
                                     <div className="bg-slate-800 p-8 rounded-3xl border-2 border-yellow-500/50 text-center space-y-6">
                                         <h2 className="text-3xl font-black text-yellow-400">🏆 อันดับผู้ชนะตารางคะแนน 🏆</h2>
+                                        
+                                        {saveResultsMessage && (
+                                            <div className="bg-purple-950/80 border border-purple-500/50 p-3 rounded-xl text-xs font-semibold text-purple-200 max-w-md mx-auto">
+                                                {saveResultsMessage}
+                                            </div>
+                                        )}
+
                                         <div className="max-w-md mx-auto space-y-2">
                                             {players.sort((a,b) => b.score - a.score).map((p, idx) => (
                                                 <div key={p.id} className={`flex justify-between p-3 rounded-xl font-bold ${
@@ -1032,48 +1075,27 @@
                                                 </div>
                                             ))}
                                         </div>
-                                        <button 
-                                            onClick={() => setView('HOME')}
-                                            className="bg-purple-600 hover:bg-purple-500 font-bold px-6 py-3 rounded-xl">
-                                            กลับสู่หน้าหลัก
-                                        </button>
+
+                                        <div className="flex justify-center gap-3">
+                                            <button 
+                                                onClick={() => handleSaveResultsToGoogleDrive()}
+                                                disabled={isSavingResults}
+                                                className="bg-green-600 hover:bg-green-500 font-bold px-5 py-3 rounded-xl text-sm flex items-center gap-2">
+                                                📊 บันทึกผลลง Google Sheet อีกครั้ง
+                                            </button>
+                                            <button 
+                                                onClick={() => setView('HOME')}
+                                                className="bg-purple-600 hover:bg-purple-500 font-bold px-6 py-3 rounded-xl text-sm">
+                                                กลับสู่หน้าหลัก
+                                            </button>
+                                        </div>
                                     </div>
                                 )}
                             </div>
                         )}
 
-                        {/* Modal สำหรับการ Import JSON */}
-                        {showImportModal && (
-                            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-                                <div className="bg-slate-800 border border-slate-700 p-6 rounded-2xl max-w-lg w-full space-y-4">
-                                    <h3 className="text-xl font-bold text-purple-300">📤 นำเข้าชุดคำถาม (Restore Backup)</h3>
-                                    <p className="text-xs text-slate-400">วางข้อความ JSON ที่ได้จากการ Export หรือสำรองข้อมูลไว้ลงในช่องด้านล่างนี้:</p>
-                                    
-                                    <textarea 
-                                        rows="8"
-                                        value={importJsonText}
-                                        onChange={(e) => setImportJsonText(e.target.value)}
-                                        placeholder="วางข้อความ JSON ที่นี่..."
-                                        className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-xs font-mono text-slate-300 focus:outline-none focus:border-purple-500"
-                                    ></textarea>
-
-                                    <div className="flex justify-end gap-2">
-                                        <button 
-                                            onClick={() => setShowImportModal(false)}
-                                            className="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-xl text-xs font-bold">
-                                            ยกเลิก
-                                        </button>
-                                        <button 
-                                            onClick={handleImportBackup}
-                                            className="bg-purple-600 hover:bg-purple-500 px-4 py-2 rounded-xl text-xs font-bold">
-                                            นำเข้าข้อมูลทันที
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                        )}
-
-                        {/* 7. PLAYER JOIN FORM */}
+                        {/* 7. PLAYER JOIN VIEW */}
+                        {}
                         {view === 'PLAYER_JOIN' && (
                             <div className="max-w-md mx-auto bg-slate-800 p-8 rounded-3xl border border-slate-700 shadow-2xl">
                                 <h2 className="text-2xl font-bold text-center mb-6 text-blue-400">เข้าร่วมเกมตอบคำถาม</h2>
@@ -1107,7 +1129,8 @@
                             </div>
                         )}
 
-                        {/* 8. PLAYER GAME VIEW (MOBILE BUTTONS) */}
+                        {/* 8. PLAYER GAME VIEW */}
+                        {}
                         {view === 'PLAYER_GAME' && (
                             <div className="max-w-md mx-auto text-center space-y-6">
                                 <div className="bg-slate-800 p-4 rounded-2xl border border-slate-700 flex justify-between items-center">
@@ -1116,9 +1139,9 @@
                                         <span className="font-bold text-blue-300 ml-2">{playerName}</span>
                                     </div>
                                     {gameState === 'QUESTION' && (
-                                        <div className="bg-purple-600 px-3 py-1 rounded-full text-white font-black text-sm animate-pulse flex items-center gap-1">
+                                        <span className="bg-purple-600 text-white font-black text-sm px-3 py-1 rounded-full animate-pulse border border-purple-400">
                                             ⏱️ {timeLeft}s
-                                        </div>
+                                        </span>
                                     )}
                                 </div>
 
@@ -1132,51 +1155,66 @@
 
                                 {gameState === 'QUESTION' && (
                                     <div className="space-y-4">
-                                        {currentQuestionData && (
-                                            <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 text-center mb-2 shadow-inner">
-                                                <div className="flex justify-between items-center mb-1">
-                                                    <span className="text-xs text-purple-400 font-bold">คำถามข้อที่ {currentQuestionIndex + 1}</span>
-                                                    <span className="text-xs text-yellow-400 font-bold">⏱️ เหลือ {timeLeft} วินาที</span>
-                                                </div>
-                                                <p className="font-bold text-base text-white">{currentQuestionData.questionText}</p>
-                                            </div>
-                                        )}
-                                        <p className="text-xs font-semibold text-slate-400">เลือกคำตอบที่ถูกต้องบนจอมือถือของคุณ:</p>
+                                        <p className="text-sm font-semibold text-slate-400">เลือกคำตอบที่ถูกต้องบนจอมือถือของคุณ:</p>
                                         <div className="grid grid-cols-1 gap-3">
                                             {[0, 1, 2, 3].map((optIdx) => (
                                                 <button 
                                                     key={optIdx}
                                                     onClick={() => handleAnswerSubmit(optIdx)}
                                                     disabled={hasAnswered}
-                                                    className={`${optionColors[optIdx]} min-h-[60px] p-4 rounded-2xl font-bold text-base md:text-lg flex items-center justify-start gap-3 shadow-lg transition active:scale-95 text-left ${
-                                                        hasAnswered && selectedOption === optIdx ? 'ring-4 ring-white' : ''
-                                                    } ${hasAnswered && selectedOption !== optIdx ? 'opacity-30' : ''}`}>
-                                                    <span className="text-2xl font-black shrink-0 w-8 text-center">{optionIcons[optIdx]}</span>
-                                                    <span className="break-words">
-                                                        {currentQuestionData && currentQuestionData.options[optIdx] 
-                                                            ? currentQuestionData.options[optIdx] 
-                                                            : `ตัวเลือก ${optIdx + 1}`}
-                                                    </span>
+                                                    className={`${optionColors[optIdx]} p-4 rounded-2xl font-bold text-lg flex items-center justify-between shadow-lg transition active:scale-95 ${
+                                                        hasAnswered && selectedOption === optIdx ? 'ring-4 ring-white scale-105' : ''
+                                                    } ${hasAnswered && selectedOption !== optIdx ? 'opacity-40 grayscale' : ''}`}>
+                                                    <span className="text-2xl font-black">{optionIcons[optIdx]}</span>
+                                                    <span className="text-sm font-semibold">{activeQuiz?.questions[currentQuestionIndex]?.options[optIdx] || `ตัวเลือก ${optIdx + 1}`}</span>
+                                                    <span className="text-xs opacity-60">ข้อ {optIdx + 1}</span>
                                                 </button>
                                             ))}
                                         </div>
                                         {hasAnswered && (
-                                            <p className="text-xs text-green-400 font-medium mt-2">✓ บันทึกคำตอบของคุณแล้ว (คำนวณคะแนนตามเวลาที่เหลืออยู่)</p>
+                                            <div className="p-3 bg-green-950/80 border border-green-500/40 text-green-300 rounded-xl text-xs font-bold">
+                                                🔒 ล็อกคำตอบเรียบร้อยแล้ว! รอวิทยากรเฉลย...
+                                            </div>
                                         )}
                                     </div>
                                 )}
 
                                 {(gameState === 'RESULT' || gameState === 'FINISHED') && (
-                                    <div className="py-12 bg-slate-800 rounded-3xl border border-slate-700 space-y-3">
-                                        <h3 className="font-bold text-xl text-yellow-400">จบข้อนี้แล้ว!</h3>
-                                        {gameState === 'RESULT' && (
-                                            <p className="text-sm text-purple-300 font-semibold animate-pulse">
-                                                กำลังเปลี่ยนไปข้อถัดไปอัตโนมัติใน {autoNextTime} วินาที...
-                                            </p>
-                                        )}
-                                        <p className="text-slate-400 text-xs">โปรดดูผลคะแนนบนหน้าจอวิทยากร</p>
+                                    <div className="py-8 bg-slate-800 rounded-3xl border border-slate-700 space-y-4">
+                                        <h3 className="font-bold text-xl text-yellow-400">สรุปผลคะแนนประจำข้อนี้</h3>
+                                        <p className="text-slate-400 text-xs">โปรดดูผลคะแนนสะสมและเฉลยบนหน้าจอวิทยากร</p>
                                     </div>
                                 )}
+                            </div>
+                        )}
+
+                        {/* IMPORT MODAL */}
+                        {}
+                        {showImportModal && (
+                            <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+                                <div className="bg-slate-800 border border-slate-700 p-6 rounded-2xl max-w-lg w-full space-y-4">
+                                    <h3 className="text-lg font-bold text-purple-300">📤 นำเข้าข้อมูลชุดคำถาม (Import JSON)</h3>
+                                    <p className="text-xs text-slate-400">วางโค้ดข้อความ JSON ที่ได้จากไฟล์สำรองข้อมูลเพื่อกู้คืนชุดคำถามทั้งหมด:</p>
+                                    <textarea 
+                                        rows="6"
+                                        value={importJsonText}
+                                        onChange={(e) => setImportJsonText(e.target.value)}
+                                        placeholder="วางโค้ด JSON ที่นี่..."
+                                        className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-xs font-mono text-slate-200 focus:outline-none focus:border-purple-500"
+                                    />
+                                    <div className="flex justify-end gap-2">
+                                        <button 
+                                            onClick={() => setShowImportModal(false)}
+                                            className="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-xl text-xs font-semibold">
+                                            ยกเลิก
+                                        </button>
+                                        <button 
+                                            onClick={handleImportBackup}
+                                            className="bg-purple-600 hover:bg-purple-500 px-4 py-2 rounded-xl text-xs font-bold">
+                                            ยืนยันนำเข้าข้อมูล
+                                        </button>
+                                    </div>
+                                </div>
                             </div>
                         )}
 
@@ -1194,16 +1232,3 @@
     </script>
 </body>
 </html>
-```
-
----
-
-### ขั้นตอนอัปเดตบน GitHub:
-1. ก๊อปปี้โค้ดในไฟล์ `index.html` ด้านบนทั้งหมด
-2. เข้าไปที่หน้า Repository ของคุณบน GitHub
-3. คลิกเข้าไปที่ไฟล์ `index.html` -> กดไอคอนดินสอ **Edit this file**
-4. ลบโค้ดเดิมแล้ววางโค้ดใหม่ทั้งหมดลงไป จากนั้นกด **Commit changes**
-5. เปิดเว็บของคุณโดยใช้ URL ที่ไม่มี `//` ซ้ำซ้อน ดังนี้:
-   `https://teerapong-wq.github.io/KNT-quiz-game-/`
-
-เมื่ออัปเดตแล้ว พอกดเข้าปุ่ม Admin แล้วใส่รหัสผ่าน `QCKNT10520` จะสามารถเข้ามาหน้าจัดการคำถามและปุ่มเชื่อมต่อ Google Drive ได้ตามปกติครับ
