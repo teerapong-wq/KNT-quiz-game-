@@ -34,9 +34,9 @@
         const { useState, useEffect, useRef } = React;
 
         // =========================================================================
-        // 📌 ตั้งค่า FIREBASE DATABASE URL ของคุณตรงนี้ (ทุกเครื่องจะใช้ตรงกันอัตโนมัติ)
+        // 📌 ตั้งค่า FIREBASE DATABASE URL ตรงนี้ (ใช้อันเดียวกันทุกเครื่องชัวร์ 100%)
         // =========================================================================
-        const DEFAULT_FB_URL = "https://knt-quiz-default-rtdb.asia-southeast1.firebasedatabase.app/";
+        const DEFAULT_FB_URL = "https://knt-quiz-default-rtdb.asia-southeast1.firebasedatabase.app";
         
         // รหัสผ่านสำหรับเข้าสู่ระบบ Admin
         const ADMIN_PASSCODE = "QCKNT10520";
@@ -126,12 +126,8 @@
             });
 
             // Firebase Config State
-            const [fbDatabaseUrl, setFbDatabaseUrl] = useState(() => {
-                return localStorage.getItem('fb_db_url') || DEFAULT_FB_URL;
-            });
-            const [fbApiKey, setFbApiKey] = useState(() => {
-                return localStorage.getItem('fb_api_key') || '';
-            });
+            const [fbDatabaseUrl, setFbDatabaseUrl] = useState(() => DEFAULT_FB_URL);
+            const [fbApiKey, setFbApiKey] = useState('');
             const dbRef = useRef(null);
 
             // Admin Auth State
@@ -169,6 +165,22 @@
             const [selectedOption, setSelectedOption] = useState(null);
 
             useEffect(() => {
+                if (!fbDatabaseUrl || !window.firebase) return;
+                try {
+                    const cleanUrl = fbDatabaseUrl.trim().replace(/\/+$/, "");
+                    let app;
+                    if (!firebase.apps.length) {
+                        app = firebase.initializeApp({ databaseURL: cleanUrl });
+                    } else {
+                        app = firebase.app();
+                    }
+                    dbRef.current = firebase.database(app);
+                } catch (err) {
+                    console.error("Firebase init error:", err);
+                }
+            }, [fbDatabaseUrl]);
+
+            useEffect(() => {
                 const activePin = pinCode || joinedPin;
                 if (activePin && dbRef.current) {
                     const playersRef = dbRef.current.ref('rooms/' + activePin + '/players');
@@ -190,6 +202,37 @@
                     return () => playersRef.off('value', handlePlayers);
                 }
             }, [view, pinCode, joinedPin]);
+
+            // Sync room state to players
+            useEffect(() => {
+                if (joinedPin && dbRef.current) {
+                    const roomRef = dbRef.current.ref('rooms/' + joinedPin);
+                    const handleRoomUpdate = (snapshot) => {
+                        const data = snapshot.val();
+                        if (data) {
+                            if (data.gameState) setGameState(data.gameState);
+                            if (data.currentQuestionIndex !== undefined) {
+                                setCurrentQuestionIndex(data.currentQuestionIndex);
+                            }
+                            if (data.timeLeft !== undefined) setTimeLeft(data.timeLeft);
+                            if (data.autoNextTime !== undefined) setAutoNextTime(data.autoNextTime);
+                            if (data.currentQuestion) {
+                                setCurrentQuestionData(data.currentQuestion);
+                            }
+                        }
+                    };
+                    roomRef.on('value', handleRoomUpdate);
+                    return () => roomRef.off('value', handleRoomUpdate);
+                }
+            }, [view, joinedPin]);
+
+            // Reset player answer choice when question updates
+            useEffect(() => {
+                if (gameState === 'QUESTION') {
+                    setHasAnswered(false);
+                    setSelectedOption(null);
+                }
+            }, [currentQuestionIndex, gameState]);
 
             const syncRoomStateToFirebase = (newState, questionIdx, timerSecs, autoNextSecs = 5, customQuestion = null) => {
                 if (!pinCode || !dbRef.current) return;
@@ -473,7 +516,6 @@
                 const currentQ = activeQuiz.questions[currentQuestionIndex];
                 if (!currentQ) return;
 
-                // ดึงข้อมูลผู้เล่นล่าสุดจาก Firebase Realtime Database โดยตรงเพื่อคิดคะแนน
                 dbRef.current.ref('rooms/' + pinCode + '/players').once('value', (snapshot) => {
                     const data = snapshot.val();
                     if (!data) return;
@@ -482,7 +524,6 @@
                         const p = data[id];
                         let earned = 0;
                         
-                        // ตรวจเช็กคำตอบโดยแปลงเป็นตัวเลขเพื่อป้องกันเรื่อง Type Mismatch
                         if (p.lastAnswer !== null && p.lastAnswer !== undefined && Number(p.lastAnswer) === Number(currentQ.correctOption)) {
                             const remTime = p.answerTime !== undefined && p.answerTime !== null ? Number(p.answerTime) : 1;
                             const totalLimit = Number(currentQ.timeLimit) || 20;
@@ -492,7 +533,6 @@
                         
                         const newScore = (Number(p.score) || 0) + earned;
 
-                        // อัปเดตคะแนนใหม่ลง Firebase
                         dbRef.current.ref('rooms/' + pinCode + '/players/' + id).update({
                             score: newScore,
                             lastEarned: earned
@@ -508,7 +548,6 @@
                     const nextIdx = currentQuestionIndex + 1;
                     setCurrentQuestionIndex(nextIdx);
                     
-                    // รีเซ็ตคำตอบล่าสุดของผู้เล่นทุกคนใน Firebase สำหรับข้อถัดไป
                     if (dbRef.current && pinCode) {
                         dbRef.current.ref('rooms/' + pinCode + '/players').once('value', (snapshot) => {
                             const data = snapshot.val();
@@ -543,6 +582,17 @@
                 
                 const myId = 'p-' + Date.now();
                 setMyPlayerId(myId);
+
+                // Initialize Firebase if dbRef is null
+                if (!dbRef.current && window.firebase) {
+                    try {
+                        const cleanUrl = fbDatabaseUrl.trim().replace(/\/+$/, "");
+                        let app = !firebase.apps.length ? firebase.initializeApp({ databaseURL: cleanUrl }) : firebase.app();
+                        dbRef.current = firebase.database(app);
+                    } catch (err) {
+                        console.error(err);
+                    }
+                }
 
                 if (!dbRef.current) {
                     return alert('❌ ไม่สามารถเชื่อมต่อระบบ Realtime Database ได้ กรุณาตรวจสอบการตั้งค่า Firebase');
@@ -775,9 +825,6 @@
                                         placeholder="https://your-project.firebasedatabase.app"
                                         className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500"
                                     />
-                                    <p className="text-[11px] text-slate-400">
-                                        💡 เคล็ดลับ: คุณสามารถแก้ไข URL นี้ในไฟล์ <code className="text-yellow-300 bg-slate-900 px-1 py-0.5 rounded">index.html</code> ตรงบรรทัด <code className="text-purple-300 bg-slate-900 px-1 py-0.5 rounded">DEFAULT_FB_URL</code> แล้วอัปโหลดขึ้น GitHub เพื่อให้ทุกเครื่องใช้ตรงกันอัตโนมัติได้เลยครับ
-                                    </p>
                                 </div>
 
                                 <div className="bg-slate-800/80 border border-purple-500/40 p-5 rounded-2xl space-y-3">
@@ -1265,6 +1312,35 @@
 
                     </main>
 
+                    {/* Import JSON Modal */}
+                    {showImportModal && (
+                        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                            <div className="bg-slate-800 border border-slate-700 rounded-2xl max-w-lg w-full p-6 space-y-4">
+                                <h3 className="text-lg font-bold text-purple-300">📤 นำเข้าคลังคำถาม (Import JSON)</h3>
+                                <p className="text-xs text-slate-400">วางโค้ด JSON ที่ได้จากการสำรองข้อมูลเพื่อกู้คืนคลังคำถาม:</p>
+                                <textarea 
+                                    value={importJsonText}
+                                    onChange={(e) => setImportJsonText(e.target.value)}
+                                    rows={8}
+                                    placeholder="วางโค้ด JSON ที่นี่..."
+                                    className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-xs font-mono text-slate-200 focus:outline-none focus:border-purple-500"
+                                />
+                                <div className="flex justify-end gap-2">
+                                    <button 
+                                        onClick={() => setShowImportModal(false)}
+                                        className="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-xl text-xs font-semibold">
+                                        ยกเลิก
+                                    </button>
+                                    <button 
+                                        onClick={handleImportBackup}
+                                        className="bg-purple-600 hover:bg-purple-500 px-4 py-2 rounded-xl text-xs font-bold">
+                                        ยืนยันนำเข้า
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
                     {/* Footer */}
                     <footer className="text-center text-xs text-slate-600 py-4 border-t border-slate-800">
                         Corporate Quiz App • สำหรับใช้จัดกิจกรรมภายในบริษัท
@@ -1277,7 +1353,3 @@
     </script>
 </body>
 </html>
-```
-
----
-
