@@ -1,0 +1,1155 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Company Quiz App - Kahoot Style with Google Drive Sync</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM CDN -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel Standalone for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Canvas Confetti -->
+    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;500;600;700&display=swap');
+        body {
+            font-family: 'Kanit', sans-serif;
+            user-select: none;
+        }
+        .animate-bounce-short {
+            animation: bounce 0.5s ease-in-out 2;
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-white min-h-screen">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // รหัสผ่านสำหรับเข้าสู่ระบบ Admin
+        const ADMIN_PASSCODE = "QCKNT10520";
+
+        // คลังชุดคำถามเริ่มต้นกรณีไม่มีใน LocalStorage
+        const DEFAULT_QUIZZES = [
+            {
+                id: 'default-1',
+                title: 'ความรู้ทั่วไปองค์กร & ความปลอดภัย',
+                description: 'ทดสอบความเข้าใจนโยบายบริษัทและการทำงานปลอดภัย',
+                questions: [
+                    {
+                        id: 'q1',
+                        questionText: 'วิvision ของบริษัทเราเน้นเรื่องใดเป็นสำคัญที่สุด?',
+                        options: ['กำไรสูงสุด', 'นวัตกรรมและความยั่งยืน', 'ขยายสาขาต่างประเทศ', 'ลดต้นทุนผลิต'],
+                        correctOption: 1,
+                        timeLimit: 20,
+                        points: 1000
+                    },
+                    {
+                        id: 'q2',
+                        questionText: 'เบอร์โทรศัพท์ฉุกเฉินสำหรับแจ้งเหตุภายในออฟฟิศคือเบอร์อะไร?',
+                        options: ['กด 0', 'กด 100', 'กด 999', 'กด 1193'],
+                        correctOption: 2,
+                        timeLimit: 15,
+                        points: 1000
+                    },
+                    {
+                        id: 'q3',
+                        questionText: 'เมื่อเกิดสัญญาณเตือนภัยไหม้ สิ่งแรกที่ต้องทำคืออะไร?',
+                        options: ['เก็บของส่วนตัวใส่กระเป๋า', 'เดินลงทางบันไดหนีไฟทันที', 'กดลิฟต์ลงชั้น 1', 'นั่งรอฟังประกาศต่อ'],
+                        correctOption: 1,
+                        timeLimit: 15,
+                        points: 1000
+                    }
+                ]
+            }
+        ];
+
+        // Web Audio Synthesizer สำหรับเสียงเอฟเฟกต์
+        const playSound = (type) => {
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+
+                if (type === 'click') {
+                    osc.frequency.setValueAtTime(400, ctx.currentTime);
+                    gain.gain.setValueAtTime(0.1, ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.1);
+                    osc.start();
+                    osc.stop(ctx.currentTime + 0.1);
+                } else if (type === 'correct') {
+                    osc.frequency.setValueAtTime(523.25, ctx.currentTime);
+                    osc.frequency.setValueAtTime(659.25, ctx.currentTime + 0.1);
+                    osc.frequency.setValueAtTime(783.99, ctx.currentTime + 0.2);
+                    gain.gain.setValueAtTime(0.15, ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
+                    osc.start();
+                    osc.stop(ctx.currentTime + 0.4);
+                } else if (type === 'wrong') {
+                    osc.type = 'sawtooth';
+                    osc.frequency.setValueAtTime(200, ctx.currentTime);
+                    osc.frequency.setValueAtTime(150, ctx.currentTime + 0.15);
+                    gain.gain.setValueAtTime(0.2, ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+                    osc.start();
+                    osc.stop(ctx.currentTime + 0.3);
+                } else if (type === 'count') {
+                    osc.frequency.setValueAtTime(800, ctx.currentTime);
+                    gain.gain.setValueAtTime(0.05, ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.08);
+                    osc.start();
+                    osc.stop(ctx.currentTime + 0.08);
+                }
+            } catch(e) {
+                console.log("Audio play error", e);
+            }
+        };
+
+        function App() {
+            const [view, setView] = useState('HOME'); // HOME, HOST_LOBBY, HOST_GAME, PLAYER_JOIN, PLAYER_GAME, ADMIN_LOGIN, ADMIN_QUIZ_LIST, ADMIN_QUIZ_EDIT
+            const [quizzes, setQuizzes] = useState(() => {
+                const saved = localStorage.getItem('company_kahoot_quizzes');
+                return saved ? JSON.parse(saved) : DEFAULT_QUIZZES;
+            });
+
+            // Admin Auth State
+            const [isAdminAuth, setIsAdminAuth] = useState(false);
+            const [passcodeInput, setPasscodeInput] = useState('');
+            const [passcodeError, setPasscodeError] = useState('');
+
+            // Backup, Import & Google Drive Sync State
+            const [showImportModal, setShowImportModal] = useState(false);
+            const [importJsonText, setImportJsonText] = useState('');
+            const [googleScriptUrl, setGoogleScriptUrl] = useState(() => {
+                return localStorage.getItem('kahoot_google_script_url') || 'https://script.google.com/macros/s/AKfycbzXMe31YiBlE698tvRnsfvXPexD4j4fBaJyJ4ZAx2gT_D67yu76P_owUks3bUBHC00M/exec';
+            });
+            const [isSyncingDrive, setIsSyncingDrive] = useState(false);
+            const [driveSyncMessage, setDriveSyncMessage] = useState('');
+
+            // Active Game Session State
+            const [activeQuiz, setActiveQuiz] = useState(null);
+            const [editingQuiz, setEditingQuiz] = useState(null);
+            const [pinCode, setPinCode] = useState('');
+            const [players, setPlayers] = useState([]);
+            const [gameState, setGameState] = useState('LOBBY');
+            const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+            const [timeLeft, setTimeLeft] = useState(20);
+            const [autoNextTime, setAutoNextTime] = useState(5);
+
+            // Player State
+            const [playerName, setPlayerName] = useState('');
+            const [joinedPin, setJoinedPin] = useState('');
+            const [myPlayerId, setMyPlayerId] = useState('');
+            const [hasAnswered, setHasAnswered] = useState(false);
+            const [selectedOption, setSelectedOption] = useState(null);
+            const [currentQuestionData, setCurrentQuestionData] = useState(null);
+
+            // Real-time Broadcast Sync Channel
+            const channelRef = useRef(null);
+
+            useEffect(() => {
+                localStorage.setItem('company_kahoot_quizzes', JSON.stringify(quizzes));
+            }, [quizzes]);
+
+            useEffect(() => {
+                localStorage.setItem('kahoot_google_script_url', googleScriptUrl);
+            }, [googleScriptUrl]);
+
+            useEffect(() => {
+                channelRef.current = new BroadcastChannel('kahoot_game_channel');
+                channelRef.current.onmessage = (event) => {
+                    const data = event.data;
+                    if (data.type === 'SYNC_GAME') {
+                        setGameState(data.gameState);
+                        setCurrentQuestionIndex(data.currentQuestionIndex);
+                        setTimeLeft(data.timeLeft);
+                        if (data.autoNextTime !== undefined) setAutoNextTime(data.autoNextTime);
+                        if (data.questionData) {
+                            setCurrentQuestionData(data.questionData);
+                        }
+                        if (data.gameState === 'QUESTION') {
+                            setHasAnswered(false);
+                            setSelectedOption(null);
+                        }
+                    } else if (data.type === 'PLAYER_JOINED' && view.startsWith('HOST')) {
+                        setPlayers(prev => {
+                            if (prev.find(p => p.name === data.name)) return prev;
+                            return [...prev, { id: data.id, name: data.name, score: 0, lastAnswer: null, answerTime: 0 }];
+                        });
+                    } else if (data.type === 'PLAYER_SUBMIT_ANSWER' && view.startsWith('HOST')) {
+                        setPlayers(prev => prev.map(p => {
+                            if (p.id === data.playerId) {
+                                return { ...p, lastAnswer: data.optionIndex, answerTime: data.timeTaken };
+                            }
+                            return p;
+                        }));
+                    }
+                };
+
+                return () => {
+                    if (channelRef.current) channelRef.current.close();
+                };
+            }, [view]);
+
+            // บรอดแคสต์สถานะเกมไปยังผู้เล่น
+            const broadcastGameState = (newState, questionIdx, timer, autoNext = 5) => {
+                if (channelRef.current) {
+                    channelRef.current.postMessage({
+                        type: 'SYNC_GAME',
+                        gameState: newState,
+                        currentQuestionIndex: questionIdx,
+                        timeLeft: timer,
+                        autoNextTime: autoNext,
+                        questionData: activeQuiz?.questions[questionIdx] || null
+                    });
+                }
+            };
+
+            // --- ADMIN HANDLERS ---
+            const handleAdminLogin = (e) => {
+                e.preventDefault();
+                if (passcodeInput.trim() === ADMIN_PASSCODE.trim()) {
+                    setIsAdminAuth(true);
+                    setPasscodeError('');
+                    setView('ADMIN_QUIZ_LIST');
+                    playSound('correct');
+                } else {
+                    setPasscodeError('รหัสผ่านไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง');
+                    playSound('wrong');
+                }
+            };
+
+            const handleLogoutAdmin = () => {
+                setIsAdminAuth(false);
+                setPasscodeInput('');
+                setView('HOME');
+            };
+
+            const handleCreateNewQuiz = () => {
+                const newQ = {
+                    id: 'quiz-' + Date.now(),
+                    title: 'ชุดคำถามใหม่ (ยังไม่ได้ตั้งชื่อ)',
+                    description: 'คำอธิบายชุดคำถาม...',
+                    questions: []
+                };
+                setQuizzes([...quizzes, newQ]);
+                setEditingQuiz(newQ);
+                setView('ADMIN_QUIZ_EDIT');
+            };
+
+            const handleDeleteQuiz = (id) => {
+                if (confirm('คุณแน่ใจหรือไม่ว่าต้องการลบชุดคำถามนี้?')) {
+                    setQuizzes(quizzes.filter(q => q.id !== id));
+                }
+            };
+
+            // --- BACKUP & RESTORE HANDLERS ---
+            const handleExportBackup = () => {
+                const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(quizzes, null, 2));
+                const downloadAnchor = document.createElement('a');
+                downloadAnchor.setAttribute("href", dataStr);
+                downloadAnchor.setAttribute("download", `kahoot_quizzes_backup_${Date.now()}.json`);
+                document.body.appendChild(downloadAnchor);
+                downloadAnchor.click();
+                downloadAnchor.remove();
+            };
+
+            const handleImportBackup = () => {
+                try {
+                    const parsed = JSON.parse(importJsonText);
+                    if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].questions) {
+                        setQuizzes(parsed);
+                        setShowImportModal(false);
+                        setImportJsonText('');
+                        alert('✅ นำเข้าชุดคำถามสำเร็จแล้ว!');
+                    } else {
+                        alert('⚠️ รูปแบบข้อมูล JSON ไม่ถูกต้อง กรุณาตรวจสอบอีกครั้ง');
+                    }
+                } catch(e) {
+                    alert('⚠️ เกิดข้อผิดพลาดในการอ่านโค้ด JSON กรุณาตรวจสอบความถูกต้อง');
+                }
+            };
+
+            // --- QUESTION MANAGER HANDLERS ---
+            const handleAddQuestion = () => {
+                if (!editingQuiz) return;
+                const newQuestion = {
+                    id: 'q-' + Date.now(),
+                    questionText: 'คำถามข้อใหม่...',
+                    options: ['ตัวเลือก A', 'ตัวเลือก B', 'ตัวเลือก C', 'ตัวเลือก D'],
+                    correctOption: 0,
+                    timeLimit: 20,
+                    points: 1000
+                };
+                const updated = {
+                    ...editingQuiz,
+                    questions: [...editingQuiz.questions, newQuestion]
+                };
+                setEditingQuiz(updated);
+                setQuizzes(quizzes.map(q => q.id === updated.id ? updated : q));
+            };
+
+            const handleUpdateQuestion = (qIndex, field, value) => {
+                if (!editingQuiz) return;
+                const updatedQuestions = [...editingQuiz.questions];
+                updatedQuestions[qIndex] = {
+                    ...updatedQuestions[qIndex],
+                    [field]: value
+                };
+                const updatedQuiz = { ...editingQuiz, questions: updatedQuestions };
+                setEditingQuiz(updatedQuiz);
+                setQuizzes(quizzes.map(q => q.id === updatedQuiz.id ? updatedQuiz : q));
+            };
+
+            const handleUpdateOption = (qIndex, optIndex, value) => {
+                if (!editingQuiz) return;
+                const updatedQuestions = [...editingQuiz.questions];
+                const newOptions = [...updatedQuestions[qIndex].options];
+                newOptions[optIndex] = value;
+                updatedQuestions[qIndex].options = newOptions;
+
+                const updatedQuiz = { ...editingQuiz, questions: updatedQuestions };
+                setEditingQuiz(updatedQuiz);
+                setQuizzes(quizzes.map(q => q.id === updatedQuiz.id ? updatedQuiz : q));
+            };
+
+            const handleDeleteQuestion = (qIndex) => {
+                if (!editingQuiz) return;
+                if (confirm('ยืนยันลบข้อคำถามนี้?')) {
+                    const updatedQuestions = editingQuiz.questions.filter((_, idx) => idx !== qIndex);
+                    const updatedQuiz = { ...editingQuiz, questions: updatedQuestions };
+                    setEditingQuiz(updatedQuiz);
+                    setQuizzes(quizzes.map(q => q.id === updatedQuiz.id ? updatedQuiz : q));
+                }
+            };
+
+            // --- HOST GAME LOGIC ---
+            const startHostLobby = (quiz) => {
+                const randomPin = Math.floor(100000 + Math.random() * 900000).toString();
+                setActiveQuiz(quiz);
+                setPinCode(randomPin);
+                setPlayers([]);
+                setGameState('LOBBY');
+                setView('HOST_LOBBY');
+            };
+
+            const addBotPlayer = () => {
+                const botNames = ['สมชาย (IT)', 'วิภา (HR)', 'กิตติ (Sales)', 'อนันต์ (CEO)', 'ปรียา (Marketing)', 'นพดล (Dev)'];
+                const randomName = botNames[Math.floor(Math.random() * botNames.length)] + ' ' + Math.floor(Math.random()*100);
+                const botObj = {
+                    id: 'bot-' + Date.now() + '-' + Math.random(),
+                    name: randomName,
+                    score: 0,
+                    lastAnswer: null,
+                    isBot: true
+                };
+                setPlayers(prev => [...prev, botObj]);
+                playSound('click');
+            };
+
+            const startFirstQuestion = () => {
+                setCurrentQuestionIndex(0);
+                setGameState('QUESTION');
+                setView('HOST_GAME');
+                const t = activeQuiz.questions[0]?.timeLimit || 20;
+                setTimeLeft(t);
+                broadcastGameState('QUESTION', 0, t, 5);
+            };
+
+            useEffect(() => {
+                let timerInterval = null;
+                let autoNextInterval = null;
+
+                if (view === 'HOST_GAME' && gameState === 'QUESTION') {
+                    players.forEach(p => {
+                        if (p.isBot && p.lastAnswer === null) {
+                            if (Math.random() > 0.4) {
+                                const randomAns = Math.floor(Math.random() * 4);
+                                p.lastAnswer = randomAns;
+                                p.answerTime = Math.round(timeLeft * (0.3 + Math.random() * 0.6));
+                            }
+                        }
+                    });
+
+                    timerInterval = setInterval(() => {
+                        setTimeLeft(prev => {
+                            if (prev <= 1) {
+                                clearInterval(timerInterval);
+                                evaluateCurrentQuestion();
+                                return 0;
+                            }
+                            const nextT = prev - 1;
+                            playSound('count');
+                            broadcastGameState('QUESTION', currentQuestionIndex, nextT, 5);
+                            return nextT;
+                        });
+                    }, 1000);
+                } else if (view === 'HOST_GAME' && gameState === 'RESULT') {
+                    setAutoNextTime(5);
+                    autoNextInterval = setInterval(() => {
+                        setAutoNextTime(prev => {
+                            if (prev <= 1) {
+                                clearInterval(autoNextInterval);
+                                goToNextQuestion();
+                                return 0;
+                            }
+                            const nextAuto = prev - 1;
+                            broadcastGameState('RESULT', currentQuestionIndex, 0, nextAuto);
+                            return nextAuto;
+                        });
+                    }, 1000);
+                }
+
+                return () => {
+                    if (timerInterval) clearInterval(timerInterval);
+                    if (autoNextInterval) clearInterval(autoNextInterval);
+                };
+            }, [view, gameState, currentQuestionIndex]);
+
+            const evaluateCurrentQuestion = () => {
+                setGameState('RESULT');
+                setAutoNextTime(5);
+                const currentQ = activeQuiz.questions[currentQuestionIndex];
+                
+                // คำนวณคะแนนผู้เล่นทุกคน: แปรผันตรงกับเวลาที่เหลืออยู่ขณะตอบ
+                setPlayers(prev => prev.map(p => {
+                    if (p.lastAnswer === currentQ.correctOption) {
+                        const remTime = p.answerTime !== undefined && p.answerTime !== null ? p.answerTime : 1;
+                        const totalLimit = currentQ.timeLimit || 20;
+                        const timeRatio = Math.min(1, Math.max(0.1, remTime / totalLimit));
+                        const earned = Math.round(currentQ.points * timeRatio);
+                        return { ...p, score: p.score + earned };
+                    }
+                    return p;
+                }));
+
+                broadcastGameState('RESULT', currentQuestionIndex, 0, 5);
+            };
+
+            const goToNextQuestion = () => {
+                if (currentQuestionIndex + 1 < activeQuiz.questions.length) {
+                    const nextIdx = currentQuestionIndex + 1;
+                    setCurrentQuestionIndex(nextIdx);
+                    setPlayers(prev => prev.map(p => ({ ...p, lastAnswer: null })));
+                    setGameState('QUESTION');
+                    const t = activeQuiz.questions[nextIdx]?.timeLimit || 20;
+                    setTimeLeft(t);
+                    broadcastGameState('QUESTION', nextIdx, t, 5);
+                } else {
+                    setGameState('FINISHED');
+                    broadcastGameState('FINISHED', currentQuestionIndex, 0, 0);
+                    confetti({ particleCount: 150, spread: 80, origin: { y: 0.6 } });
+                }
+            };
+
+            // --- PLAYER JOIN HANDLERS ---
+            const handlePlayerJoin = (e) => {
+                e.preventDefault();
+                if (!playerName.trim() || !joinedPin.trim()) return alert('กรุณากรอก PIN และชื่อของคุณ');
+                
+                const myId = 'p-' + Date.now();
+                setMyPlayerId(myId);
+                setView('PLAYER_GAME');
+                
+                if (channelRef.current) {
+                    channelRef.current.postMessage({
+                        type: 'PLAYER_JOINED',
+                        id: myId,
+                        name: playerName
+                    });
+                }
+                playSound('correct');
+            };
+
+            const handleAnswerSubmit = (optionIndex) => {
+                if (hasAnswered || gameState !== 'QUESTION') return;
+                setHasAnswered(true);
+                setSelectedOption(optionIndex);
+                playSound('click');
+
+                if (channelRef.current) {
+                    channelRef.current.postMessage({
+                        type: 'PLAYER_SUBMIT_ANSWER',
+                        playerId: myPlayerId,
+                        optionIndex: optionIndex,
+                        timeTaken: timeLeft
+                    });
+                }
+            };
+
+            const optionColors = [
+                'bg-red-600 hover:bg-red-700 text-white',
+                'bg-blue-600 hover:bg-blue-700 text-white',
+                'bg-yellow-500 hover:bg-yellow-600 text-white',
+                'bg-green-600 hover:bg-green-700 text-white'
+            ];
+            const optionIcons = ['▲', '◆', '●', '■'];
+
+            return (
+                <div className="min-h-screen flex flex-col justify-between p-4 max-w-6xl mx-auto">
+                    {/* Header Bar */}
+                    <header className="flex justify-between items-center py-3 border-b border-slate-800">
+                        <div className="flex items-center gap-2 cursor-pointer" onClick={() => setView('HOME')}>
+                            <div className="bg-purple-600 p-2 rounded-lg font-black text-xl tracking-wider">QCK</div>
+                            <span className="font-bold text-xl bg-gradient-to-r from-purple-400 to-pink-500 bg-clip-text text-transparent">
+                                Corporate Quiz App
+                            </span>
+                        </div>
+
+                        <div className="flex gap-2">
+                            {isAdminAuth ? (
+                                <div className="flex items-center gap-2">
+                                    <span className="text-xs bg-green-500/20 text-green-400 px-3 py-1 rounded-full border border-green-500/30 flex items-center gap-1">
+                                        🔓 Admin Login อยู่
+                                    </span>
+                                    <button 
+                                        onClick={() => setView('ADMIN_QUIZ_LIST')}
+                                        className="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700">
+                                        จัดการชุดคำถาม
+                                    </button>
+                                    <button 
+                                        onClick={handleLogoutAdmin}
+                                        className="text-xs bg-red-600/80 hover:bg-red-600 px-3 py-1.5 rounded-lg">
+                                        ออกจากระบบ
+                                    </button>
+                                </div>
+                            ) : (
+                                <button 
+                                    onClick={() => setView('ADMIN_LOGIN')}
+                                    className="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700 text-slate-300 flex items-center gap-1">
+                                    🔒 สำหรับแอดมิน (สร้างคำถาม)
+                                </button>
+                            )}
+                        </div>
+                    </header>
+
+                    {/* Main Content Area */}
+                    <main className="my-auto py-6">
+                        
+                        {/* 1. HOME VIEW */}
+                        {view === 'HOME' && (
+                            <div className="text-center max-w-2xl mx-auto space-y-8">
+                                <div>
+                                    <h1 className="text-4xl md:text-5xl font-black mb-3 bg-gradient-to-r from-yellow-400 via-pink-500 to-purple-500 bg-clip-text text-transparent">
+                                        พร้อมสนุกกับการทดสอบความรู้หรือยัง?
+                                    </h1>
+                                    <p className="text-slate-400 text-lg">
+                                        เลือกโหมดการใช้งานสำหรับวิทยากรผู้นำเสนอ หรือพนักงานเข้าร่วมตอบคำถาม
+                                    </p>
+                                </div>
+
+                                <div className="grid md:grid-cols-2 gap-4">
+                                    <div 
+                                        onClick={() => {
+                                            if(quizzes.length > 0) startHostLobby(quizzes[0]);
+                                            else alert('ยังไม่มีชุดคำถาม กรุณาเข้าสู่ระบบ Admin เพื่อเพิ่มคำถาม');
+                                        }}
+                                        className="bg-slate-800/80 hover:bg-purple-900/40 border-2 border-purple-500/30 hover:border-purple-500 p-6 rounded-2xl cursor-pointer transition transform hover:-translate-y-1 text-left group">
+                                        <div className="text-3xl mb-2">📺</div>
+                                        <h3 className="text-xl font-bold group-hover:text-purple-300">เป็นวิทยากร (Host)</h3>
+                                        <p className="text-slate-400 text-sm mt-1">เปิดหน้าจอนี้ขึ้นโปรเจกเตอร์เพื่อสร้างห้องเล่นเกมกับทีมงาน</p>
+                                    </div>
+
+                                    <div 
+                                        onClick={() => setView('PLAYER_JOIN')}
+                                        className="bg-slate-800/80 hover:bg-blue-900/40 border-2 border-blue-500/30 hover:border-blue-500 p-6 rounded-2xl cursor-pointer transition transform hover:-translate-y-1 text-left group">
+                                        <div className="text-3xl mb-2">📱</div>
+                                        <h3 className="text-xl font-bold group-hover:text-blue-300">เข้าร่วมเล่น (Player)</h3>
+                                        <p className="text-slate-400 text-sm mt-1">เข้าสู่ห้องด้วย PIN Code บนมือถือเพื่อตอบคำถามแข่งขัน</p>
+                                    </div>
+                                </div>
+
+                                {/* Preset Quizzes Selector for Host */}
+                                <div className="bg-slate-800/40 p-4 rounded-xl border border-slate-800 text-left">
+                                    <h4 className="font-bold text-slate-300 mb-3 text-sm">เลือกชุดคำถามสำหรับวิทยากร:</h4>
+                                    <div className="space-y-2">
+                                        {quizzes.map(q => (
+                                            <div key={q.id} className="flex justify-between items-center bg-slate-800 p-3 rounded-lg">
+                                                <div>
+                                                    <div className="font-medium text-purple-300">{q.title}</div>
+                                                    <div className="text-xs text-slate-400">{q.description} ({q.questions.length} ข้อ)</div>
+                                                </div>
+                                                <button 
+                                                    onClick={() => startHostLobby(q)}
+                                                    className="bg-purple-600 hover:bg-purple-500 text-xs font-bold px-3 py-1.5 rounded-lg">
+                                                    เริ่มเล่นชุดนี้
+                                                </button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* 2. ADMIN LOGIN MODAL / VIEW */}
+                        {view === 'ADMIN_LOGIN' && (
+                            <div className="max-w-md mx-auto bg-slate-800 border border-slate-700 p-8 rounded-2xl shadow-2xl">
+                                <div className="text-center mb-6">
+                                    <div className="text-4xl mb-2">🔒</div>
+                                    <h2 className="text-2xl font-bold">เข้าสู่ระบบแอดมิน</h2>
+                                    <p className="text-slate-400 text-sm mt-1">กรอกรหัสผ่านเพื่อเข้าสู่ระบบจัดการคำถาม</p>
+                                </div>
+
+                                <form onSubmit={handleAdminLogin} className="space-y-4">
+                                    <div>
+                                        <label className="block text-xs font-semibold text-slate-400 mb-1">Passcode รหัสผ่าน</label>
+                                        <input 
+                                            type="password"
+                                            value={passcodeInput}
+                                            onChange={(e) => setPasscodeInput(e.target.value)}
+                                            placeholder="กรอกรหัสผ่าน..."
+                                            className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-white text-center text-lg tracking-widest focus:outline-none focus:border-purple-500"
+                                            autoFocus
+                                        />
+                                    </div>
+
+                                    {passcodeError && (
+                                        <div className="bg-red-500/20 text-red-400 text-xs p-2.5 rounded-lg border border-red-500/30 text-center">
+                                            {passcodeError}
+                                        </div>
+                                    )}
+
+                                    <div className="flex gap-2 pt-2">
+                                        <button 
+                                            type="button"
+                                            onClick={() => setView('HOME')}
+                                            className="w-1/2 bg-slate-700 hover:bg-slate-600 py-2.5 rounded-lg text-sm font-semibold">
+                                            ยกเลิก
+                                        </button>
+                                        <button 
+                                            type="submit"
+                                            className="w-1/2 bg-purple-600 hover:bg-purple-500 py-2.5 rounded-lg text-sm font-bold">
+                                            ยืนยันรหัสผ่าน
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                        )}
+
+                        {/* 3. ADMIN QUIZ LIST */}
+                        {view === 'ADMIN_QUIZ_LIST' && (
+                            <div className="max-w-4xl mx-auto space-y-6">
+                                <div className="flex flex-wrap justify-between items-center gap-4">
+                                    <div>
+                                        <h2 className="text-2xl font-bold text-purple-300">คลังชุดคำถามทั้งหมด</h2>
+                                        <p className="text-slate-400 text-sm">สร้าง แก้ไข หรือเพิ่มข้อสอบในระบบ</p>
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                        <button 
+                                            onClick={handleExportBackup}
+                                            className="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1">
+                                            📥 สำรองข้อมูล (Export JSON)
+                                        </button>
+                                        <button 
+                                            onClick={() => setShowImportModal(true)}
+                                            className="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1">
+                                            📤 นำเข้าข้อมูล (Import JSON)
+                                        </button>
+                                        <button 
+                                            onClick={handleCreateNewQuiz}
+                                            className="bg-green-600 hover:bg-green-500 font-bold px-4 py-2 rounded-xl text-xs flex items-center gap-1">
+                                            ➕ สร้างชุดคำถามใหม่
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* GOOGLE DRIVE SYNC CARD */}
+                                <div className="bg-slate-800/80 border border-purple-500/40 p-5 rounded-2xl space-y-3">
+                                    <div className="flex justify-between items-center">
+                                        <h3 className="font-bold text-purple-300 text-sm flex items-center gap-2">
+                                            📁 เชื่อมต่อ Google Drive Database 
+                                            <span className="text-xs font-normal text-slate-400">(โฟลเดอร์: 1eXrm3CutbA5BQg0NsiyNgK8ewzi7LoO9)</span>
+                                        </h3>
+                                        {driveSyncMessage && (
+                                            <span className="text-xs font-semibold px-2.5 py-1 rounded-md bg-purple-950 text-purple-300 border border-purple-500/30">
+                                                {driveSyncMessage}
+                                            </span>
+                                        )}
+                                    </div>
+                                    <p className="text-xs text-slate-400">
+                                        นำ **Web App URL** ที่ได้จาก Google Apps Script ในโฟลเดอร์มาวาง เพื่อให้คลังคำถามซิงค์ตรงกับ Google Drive โดยอัตโนมัติ:
+                                    </p>
+                                    <div className="flex gap-2">
+                                        <input 
+                                            type="text"
+                                            value={googleScriptUrl}
+                                            onChange={(e) => setGoogleScriptUrl(e.target.value)}
+                                            placeholder="https://script.google.com/macros/s/.../exec"
+                                            className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-purple-500"
+                                        />
+                                        <button 
+                                            onClick={handleSaveToGoogleDrive}
+                                            disabled={isSyncingDrive}
+                                            className="bg-purple-600 hover:bg-purple-500 text-xs font-bold px-3 py-2 rounded-xl flex items-center gap-1 shrink-0">
+                                            ☁️ บันทึกลง Drive
+                                        </button>
+                                        <button 
+                                            onClick={handleLoadFromGoogleDrive}
+                                            disabled={isSyncingDrive}
+                                            className="bg-blue-600 hover:bg-blue-500 text-xs font-bold px-3 py-2 rounded-xl flex items-center gap-1 shrink-0">
+                                            🔄 ดึงคำถามจาก Drive
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div className="space-y-4">
+                                    {quizzes.map((q) => (
+                                        <div key={q.id} className="bg-slate-800 border border-slate-700 p-5 rounded-2xl flex justify-between items-center">
+                                            <div>
+                                                <h3 className="text-lg font-bold text-white">{q.title}</h3>
+                                                <p className="text-slate-400 text-sm">{q.description}</p>
+                                                <span className="inline-block bg-slate-700 text-purple-300 text-xs px-2.5 py-0.5 rounded-full mt-2">
+                                                    มีคำถามทั้งหมด {q.questions.length} ข้อ
+                                                </span>
+                                            </div>
+                                            <div className="flex gap-2">
+                                                <button 
+                                                    onClick={() => {
+                                                        setEditingQuiz(q);
+                                                        setView('ADMIN_QUIZ_EDIT');
+                                                    }}
+                                                    className="bg-purple-600 hover:bg-purple-500 text-xs font-bold px-3 py-2 rounded-lg">
+                                                    ✏️ จัดการข้อคำถาม
+                                                </button>
+                                                <button 
+                                                    onClick={() => handleDeleteQuiz(q.id)}
+                                                    className="bg-red-600/80 hover:bg-red-600 text-xs font-bold px-3 py-2 rounded-lg">
+                                                    🗑️ ลบ
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* 4. ADMIN EDIT QUIZ & QUESTIONS MANAGER */}
+                        {view === 'ADMIN_QUIZ_EDIT' && editingQuiz && (
+                            <div className="max-w-4xl mx-auto space-y-6">
+                                <div className="flex justify-between items-center border-b border-slate-800 pb-4">
+                                    <button 
+                                        onClick={() => setView('ADMIN_QUIZ_LIST')}
+                                        className="bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg text-xs">
+                                        ← กลับไปหน้าชุดคำถาม
+                                    </button>
+                                    <h2 className="text-xl font-bold text-purple-300">แก้ไขชุดคำถาม & เพิ่มข้อสอบ</h2>
+                                    <button 
+                                        onClick={handleAddQuestion}
+                                        className="bg-green-600 hover:bg-green-500 font-bold px-3 py-1.5 rounded-lg text-xs">
+                                        ➕ เพิ่มข้อคำถามใหม่
+                                    </button>
+                                </div>
+
+                                {/* Quiz Info Form */}
+                                <div className="bg-slate-800/60 p-4 rounded-xl border border-slate-700 space-y-3">
+                                    <div>
+                                        <label className="block text-xs font-semibold text-slate-400 mb-1">ชื่อชุดคำถาม</label>
+                                        <input 
+                                            type="text"
+                                            value={editingQuiz.title}
+                                            onChange={(e) => {
+                                                const updated = { ...editingQuiz, title: e.target.value };
+                                                setEditingQuiz(updated);
+                                                setQuizzes(quizzes.map(q => q.id === updated.id ? updated : q));
+                                            }}
+                                            className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-semibold text-slate-400 mb-1">คำอธิบาย</label>
+                                        <input 
+                                            type="text"
+                                            value={editingQuiz.description}
+                                            onChange={(e) => {
+                                                const updated = { ...editingQuiz, description: e.target.value };
+                                                setEditingQuiz(updated);
+                                                setQuizzes(quizzes.map(q => q.id === updated.id ? updated : q));
+                                            }}
+                                            className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm"
+                                        />
+                                    </div>
+                                </div>
+
+                                {/* Questions List */}
+                                <div className="space-y-6">
+                                    <h3 className="font-bold text-slate-300">รายการคำถามทั้งหมด ({editingQuiz.questions.length} ข้อ)</h3>
+                                    
+                                    {editingQuiz.questions.length === 0 && (
+                                        <div className="text-center py-8 bg-slate-800/30 rounded-xl border border-dashed border-slate-700">
+                                            <p className="text-slate-500 text-sm">ยังไม่มีข้อคำถามในชุดนี้ กดปุ่มด้านล่างเพื่อเพิ่มข้อแรก</p>
+                                            <button 
+                                                onClick={handleAddQuestion}
+                                                className="mt-3 bg-purple-600 hover:bg-purple-500 font-bold px-4 py-2 rounded-lg text-xs">
+                                                ➕ เพิ่มข้อคำถามแรก
+                                            </button>
+                                        </div>
+                                    )}
+
+                                    {editingQuiz.questions.map((q, qIndex) => (
+                                        <div key={q.id || qIndex} className="bg-slate-800 border border-slate-700 p-5 rounded-2xl relative space-y-4">
+                                            <div className="flex justify-between items-center">
+                                                <span className="font-black text-purple-400 bg-purple-950/60 border border-purple-500/30 px-3 py-1 rounded-lg text-xs">
+                                                    ข้อที่ {qIndex + 1}
+                                                </span>
+                                                <button 
+                                                    onClick={() => handleDeleteQuestion(qIndex)}
+                                                    className="bg-red-600/20 hover:bg-red-600 text-red-400 hover:text-white text-xs px-2.5 py-1 rounded-lg border border-red-500/30">
+                                                    🗑️ ลบข้อนี้
+                                                </button>
+                                            </div>
+
+                                            <div>
+                                                <label className="block text-xs text-slate-400 mb-1">โจทย์คำถาม</label>
+                                                <input 
+                                                    type="text"
+                                                    value={q.questionText}
+                                                    onChange={(e) => handleUpdateQuestion(qIndex, 'questionText', e.target.value)}
+                                                    className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm font-semibold"
+                                                />
+                                            </div>
+
+                                            {/* Options Grid */}
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                                {q.options.map((opt, optIndex) => (
+                                                    <div key={optIndex} className="flex items-center gap-2">
+                                                        <span className={`w-6 h-6 rounded flex items-center justify-center font-bold text-xs ${
+                                                            optIndex === 0 ? 'bg-red-600' :
+                                                            optIndex === 1 ? 'bg-blue-600' :
+                                                            optIndex === 2 ? 'bg-yellow-500 text-slate-900' : 'bg-green-600'
+                                                        }`}>
+                                                            {optionIcons[optIndex]}
+                                                        </span>
+                                                        <input 
+                                                            type="text"
+                                                            value={opt}
+                                                            onChange={(e) => handleUpdateOption(qIndex, optIndex, e.target.value)}
+                                                            className="flex-1 bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs"
+                                                            placeholder={`ตัวเลือก ${optIndex + 1}`}
+                                                        />
+                                                    </div>
+                                                ))}
+                                            </div>
+
+                                            <div className="flex flex-wrap gap-4 pt-2 border-t border-slate-700/50">
+                                                <div>
+                                                    <label className="block text-xs text-slate-400 mb-1">เฉลยข้อที่ถูกต้อง</label>
+                                                    <select 
+                                                        value={q.correctOption}
+                                                        onChange={(e) => handleUpdateQuestion(qIndex, 'correctOption', parseInt(e.target.value))}
+                                                        className="bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs font-medium text-green-400">
+                                                        <option value={0}>ตัวเลือก 1 (สีแดง ▲)</option>
+                                                        <option value={1}>ตัวเลือก 2 (สีน้ำเงิน ◆)</option>
+                                                        <option value={2}>ตัวเลือก 3 (สีเหลือง ●)</option>
+                                                        <option value={3}>ตัวเลือก 4 (สีเขียว ■)</option>
+                                                    </select>
+                                                </div>
+
+                                                <div>
+                                                    <label className="block text-xs text-slate-400 mb-1">เวลาในการตอบ (วินาที)</label>
+                                                    <select 
+                                                        value={q.timeLimit || 20}
+                                                        onChange={(e) => handleUpdateQuestion(qIndex, 'timeLimit', parseInt(e.target.value))}
+                                                        className="bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs">
+                                                        <option value={10}>10 วินาที</option>
+                                                        <option value={15}>15 วินาที</option>
+                                                        <option value={20}>20 วินาที</option>
+                                                        <option value={30}>30 วินาที</option>
+                                                        <option value={60}>60 วินาที</option>
+                                                    </select>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* 5. HOST LOBBY */}
+                        {view === 'HOST_LOBBY' && (
+                            <div className="text-center space-y-8">
+                                <div className="bg-slate-800 border-2 border-purple-500/40 p-6 rounded-3xl inline-block max-w-xl w-full shadow-2xl">
+                                    <p className="text-slate-400 text-sm font-semibold uppercase tracking-wider mb-1">สแกนรหัส PIN เพื่อเข้าร่วม</p>
+                                    <div className="text-6xl font-black tracking-widest text-yellow-400 my-2 my-auto">{pinCode}</div>
+                                    <p className="text-xs text-slate-400">เข้าผ่านเบราว์เซอร์แล้วเลือก "เข้าร่วมเล่น" ใส่ PIN ด้านบนนี้</p>
+                                </div>
+
+                                <div>
+                                    <div className="flex justify-between items-center max-w-2xl mx-auto mb-4">
+                                        <h3 className="font-bold text-lg text-slate-300">
+                                            ผู้เล่นที่เข้ามาแล้ว ({players.length} คน)
+                                        </h3>
+                                        <button 
+                                            onClick={addBotPlayer}
+                                            className="bg-slate-800 hover:bg-slate-700 text-xs px-3 py-1.5 rounded-lg border border-slate-700">
+                                            🤖 จำลองเพิ่ม Bot
+                                        </button>
+                                    </div>
+
+                                    <div className="flex flex-wrap justify-center gap-3 max-w-3xl mx-auto min-h-[120px] p-4 bg-slate-800/30 rounded-2xl border border-slate-800">
+                                        {players.length === 0 ? (
+                                            <p className="text-slate-500 my-auto text-sm">กำลังรอผู้เล่นเข้าร่วมห้อง...</p>
+                                        ) : (
+                                            players.map(p => (
+                                                <div key={p.id} className="bg-purple-900/60 border border-purple-500/40 px-4 py-2 rounded-xl text-sm font-bold animate-bounce-short">
+                                                    👤 {p.name}
+                                                </div>
+                                            ))
+                                        )}
+                                    </div>
+                                </div>
+
+                                <button 
+                                    onClick={startFirstQuestion}
+                                    disabled={players.length === 0}
+                                    className={`px-8 py-4 rounded-2xl font-black text-xl shadow-lg transition ${
+                                        players.length > 0 ? 'bg-green-500 hover:bg-green-600 text-slate-900 cursor-pointer' : 'bg-slate-700 text-slate-500 cursor-not-allowed'
+                                    }`}>
+                                    🚀 เริ่มเล่นเกมเลย!
+                                </button>
+                            </div>
+                        )}
+
+                        {/* 6. HOST GAME VIEW (SHOW QUESTION & LEADERBOARD) */}
+                        {view === 'HOST_GAME' && activeQuiz && (
+                            <div className="space-y-6">
+                                {/* Question Progress & Timer */}
+                                <div className="flex justify-between items-center">
+                                    <span className="font-bold text-purple-300">
+                                        คำถามข้อที่ {currentQuestionIndex + 1} / {activeQuiz.questions.length}
+                                    </span>
+                                    <div className="w-16 h-16 bg-purple-600 rounded-full flex items-center justify-center font-black text-2xl border-4 border-purple-400">
+                                        {timeLeft}
+                                    </div>
+                                </div>
+
+                                {/* Question Title Card */}
+                                <div className="bg-slate-800 border-2 border-slate-700 p-8 rounded-3xl text-center shadow-xl">
+                                    <h2 className="text-2xl md:text-3xl font-black">
+                                        {activeQuiz.questions[currentQuestionIndex]?.questionText}
+                                    </h2>
+                                </div>
+
+                                {/* Option Grid Preview */}
+                                <div className="grid grid-cols-2 gap-4">
+                                    {activeQuiz.questions[currentQuestionIndex]?.options.map((opt, idx) => (
+                                        <div 
+                                            key={idx} 
+                                            className={`${optionColors[idx]} p-5 rounded-2xl font-bold text-lg flex items-center gap-3 shadow-md ${
+                                                gameState === 'RESULT' && idx === activeQuiz.questions[currentQuestionIndex].correctOption ? 'ring-4 ring-white' : ''
+                                            }`}>
+                                            <span className="text-2xl">{optionIcons[idx]}</span>
+                                            <span>{opt}</span>
+                                            {gameState === 'RESULT' && idx === activeQuiz.questions[currentQuestionIndex].correctOption && (
+                                                <span className="ml-auto bg-white text-green-700 text-xs px-2 py-1 rounded-md">✓ คำตอบที่ถูก</span>
+                                            )}
+                                        </div>
+                                    ))}
+                                </div>
+
+                                {/* Host Action Controls */}
+                                {gameState === 'RESULT' && (
+                                    <div className="bg-slate-800 p-6 rounded-2xl border border-slate-700 text-center space-y-4">
+                                        <div className="flex justify-between items-center bg-purple-950/80 p-3 rounded-xl border border-purple-500/30">
+                                            <h3 className="text-xl font-bold text-yellow-400">สรุปคะแนนหลังจบข้อนี้</h3>
+                                            <span className="text-sm font-bold bg-purple-600 text-white px-3 py-1 rounded-full animate-pulse">
+                                                ⏱️ ข้อถัดไปใน {autoNextTime} วินาที...
+                                            </span>
+                                        </div>
+                                        <div className="flex justify-center gap-4 text-sm">
+                                            {players.sort((a,b) => b.score - a.score).slice(0, 3).map((p, rank) => (
+                                                <div key={p.id} className="bg-slate-900 px-4 py-2 rounded-xl">
+                                                    #{rank+1} {p.name}: <span className="text-yellow-400 font-bold">{p.score}</span> คะแนน
+                                                </div>
+                                            ))}
+                                        </div>
+                                        <button 
+                                            onClick={goToNextQuestion}
+                                            className="bg-purple-600 hover:bg-purple-500 font-bold px-6 py-3 rounded-xl">
+                                            เริ่มข้อถัดไปทันที ➔
+                                        </button>
+                                    </div>
+                                )}
+
+                                {gameState === 'FINISHED' && (
+                                    <div className="bg-slate-800 p-8 rounded-3xl border-2 border-yellow-500/50 text-center space-y-6">
+                                        <h2 className="text-3xl font-black text-yellow-400">🏆 อันดับผู้ชนะตารางคะแนน 🏆</h2>
+                                        <div className="max-w-md mx-auto space-y-2">
+                                            {players.sort((a,b) => b.score - a.score).map((p, idx) => (
+                                                <div key={p.id} className={`flex justify-between p-3 rounded-xl font-bold ${
+                                                    idx === 0 ? 'bg-yellow-500/20 text-yellow-300 border border-yellow-500/40 text-lg' : 'bg-slate-900 text-slate-300'
+                                                }`}>
+                                                    <span>#{idx+1} {p.name}</span>
+                                                    <span>{p.score} คะแนน</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                        <button 
+                                            onClick={() => setView('HOME')}
+                                            className="bg-purple-600 hover:bg-purple-500 font-bold px-6 py-3 rounded-xl">
+                                            กลับสู่หน้าหลัก
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {/* Modal สำหรับการ Import JSON */}
+                        {showImportModal && (
+                            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                                <div className="bg-slate-800 border border-slate-700 p-6 rounded-2xl max-w-lg w-full space-y-4">
+                                    <h3 className="text-xl font-bold text-purple-300">📤 นำเข้าชุดคำถาม (Restore Backup)</h3>
+                                    <p className="text-xs text-slate-400">วางข้อความ JSON ที่ได้จากการ Export หรือสำรองข้อมูลไว้ลงในช่องด้านล่างนี้:</p>
+                                    
+                                    <textarea 
+                                        rows="8"
+                                        value={importJsonText}
+                                        onChange={(e) => setImportJsonText(e.target.value)}
+                                        placeholder="วางข้อความ JSON ที่นี่..."
+                                        className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-xs font-mono text-slate-300 focus:outline-none focus:border-purple-500"
+                                    ></textarea>
+
+                                    <div className="flex justify-end gap-2">
+                                        <button 
+                                            onClick={() => setShowImportModal(false)}
+                                            className="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-xl text-xs font-bold">
+                                            ยกเลิก
+                                        </button>
+                                        <button 
+                                            onClick={handleImportBackup}
+                                            className="bg-purple-600 hover:bg-purple-500 px-4 py-2 rounded-xl text-xs font-bold">
+                                            นำเข้าข้อมูลทันที
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* 7. PLAYER JOIN FORM */}
+                        {view === 'PLAYER_JOIN' && (
+                            <div className="max-w-md mx-auto bg-slate-800 p-8 rounded-3xl border border-slate-700 shadow-2xl">
+                                <h2 className="text-2xl font-bold text-center mb-6 text-blue-400">เข้าร่วมเกมตอบคำถาม</h2>
+                                <form onSubmit={handlePlayerJoin} className="space-y-4">
+                                    <div>
+                                        <label className="block text-xs font-semibold text-slate-400 mb-1">PIN Code (6 หลัก)</label>
+                                        <input 
+                                            type="number"
+                                            value={joinedPin}
+                                            onChange={(e) => setJoinedPin(e.target.value)}
+                                            placeholder="กรอกรหัส PIN..."
+                                            className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-center text-2xl font-black tracking-widest text-yellow-400 focus:outline-none focus:border-blue-500"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-semibold text-slate-400 mb-1">ชื่อพนักงาน / Nickname</label>
+                                        <input 
+                                            type="text"
+                                            value={playerName}
+                                            onChange={(e) => setPlayerName(e.target.value)}
+                                            placeholder="ระบุชื่อของคุณ..."
+                                            className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-center font-bold text-white focus:outline-none focus:border-blue-500"
+                                        />
+                                    </div>
+                                    <button 
+                                        type="submit"
+                                        className="w-full bg-blue-600 hover:bg-blue-500 font-bold py-3.5 rounded-xl text-lg shadow-lg">
+                                        เข้าร่วมเลย ➔
+                                    </button>
+                                </form>
+                            </div>
+                        )}
+
+                        {/* 8. PLAYER GAME VIEW (MOBILE BUTTONS) */}
+                        {view === 'PLAYER_GAME' && (
+                            <div className="max-w-md mx-auto text-center space-y-6">
+                                <div className="bg-slate-800 p-4 rounded-2xl border border-slate-700 flex justify-between items-center">
+                                    <div>
+                                        <span className="text-xs text-slate-400">ผู้เล่น:</span>
+                                        <span className="font-bold text-blue-300 ml-2">{playerName}</span>
+                                    </div>
+                                    {gameState === 'QUESTION' && (
+                                        <div className="bg-purple-600 px-3 py-1 rounded-full text-white font-black text-sm animate-pulse flex items-center gap-1">
+                                            ⏱️ {timeLeft}s
+                                        </div>
+                                    )}
+                                </div>
+
+                                {gameState === 'LOBBY' && (
+                                    <div className="py-12 bg-slate-800/40 rounded-3xl border border-dashed border-slate-700">
+                                        <div className="text-4xl mb-3">⏳</div>
+                                        <h3 className="font-bold text-lg">เข้าร่วมห้องเรียบร้อย!</h3>
+                                        <p className="text-slate-400 text-sm mt-1">รอดูกระดานโปรเจกเตอร์และรอวิทยากรเริ่มเกม...</p>
+                                    </div>
+                                )}
+
+                                {gameState === 'QUESTION' && (
+                                    <div className="space-y-4">
+                                        {currentQuestionData && (
+                                            <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 text-center mb-2 shadow-inner">
+                                                <div className="flex justify-between items-center mb-1">
+                                                    <span className="text-xs text-purple-400 font-bold">คำถามข้อที่ {currentQuestionIndex + 1}</span>
+                                                    <span className="text-xs text-yellow-400 font-bold">⏱️ เหลือ {timeLeft} วินาที</span>
+                                                </div>
+                                                <p className="font-bold text-base text-white">{currentQuestionData.questionText}</p>
+                                            </div>
+                                        )}
+                                        <p className="text-xs font-semibold text-slate-400">เลือกคำตอบที่ถูกต้องบนจอมือถือของคุณ:</p>
+                                        <div className="grid grid-cols-1 gap-3">
+                                            {[0, 1, 2, 3].map((optIdx) => (
+                                                <button 
+                                                    key={optIdx}
+                                                    onClick={() => handleAnswerSubmit(optIdx)}
+                                                    disabled={hasAnswered}
+                                                    className={`${optionColors[optIdx]} min-h-[60px] p-4 rounded-2xl font-bold text-base md:text-lg flex items-center justify-start gap-3 shadow-lg transition active:scale-95 text-left ${
+                                                        hasAnswered && selectedOption === optIdx ? 'ring-4 ring-white' : ''
+                                                    } ${hasAnswered && selectedOption !== optIdx ? 'opacity-30' : ''}`}>
+                                                    <span className="text-2xl font-black shrink-0 w-8 text-center">{optionIcons[optIdx]}</span>
+                                                    <span className="break-words">
+                                                        {currentQuestionData && currentQuestionData.options[optIdx] 
+                                                            ? currentQuestionData.options[optIdx] 
+                                                            : `ตัวเลือก ${optIdx + 1}`}
+                                                    </span>
+                                                </button>
+                                            ))}
+                                        </div>
+                                        {hasAnswered && (
+                                            <p className="text-xs text-green-400 font-medium mt-2">✓ บันทึกคำตอบของคุณแล้ว (คำนวณคะแนนตามเวลาที่เหลืออยู่)</p>
+                                        )}
+                                    </div>
+                                )}
+
+                                {(gameState === 'RESULT' || gameState === 'FINISHED') && (
+                                    <div className="py-12 bg-slate-800 rounded-3xl border border-slate-700 space-y-3">
+                                        <h3 className="font-bold text-xl text-yellow-400">จบข้อนี้แล้ว!</h3>
+                                        {gameState === 'RESULT' && (
+                                            <p className="text-sm text-purple-300 font-semibold animate-pulse">
+                                                กำลังเปลี่ยนไปข้อถัดไปอัตโนมัติใน {autoNextTime} วินาที...
+                                            </p>
+                                        )}
+                                        <p className="text-slate-400 text-xs">โปรดดูผลคะแนนบนหน้าจอวิทยากร</p>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                    </main>
+
+                    {/* Footer */}
+                    <footer className="text-center text-xs text-slate-600 py-4 border-t border-slate-800">
+                        Corporate Quiz App • สำหรับใช้จัดกิจกรรมภายในบริษัท
+                    </footer>
+                </div>
+            );
+        }
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>
