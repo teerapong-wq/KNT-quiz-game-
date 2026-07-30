@@ -169,72 +169,9 @@
             const [selectedOption, setSelectedOption] = useState(null);
 
             useEffect(() => {
-                if (googleScriptUrl) {
-                    fetch(googleScriptUrl)
-                        .then(res => res.json())
-                        .then(data => {
-                            if (data) {
-                                if (Array.isArray(data) && data.length > 0) {
-                                    setQuizzes(data);
-                                } else if (data.quizzes && Array.isArray(data.quizzes)) {
-                                    setQuizzes(data.quizzes);
-                                    if (data.fbDatabaseUrl) {
-                                        setFbDatabaseUrl(data.fbDatabaseUrl);
-                                        localStorage.setItem('fb_db_url', data.fbDatabaseUrl);
-                                    }
-                                }
-                            }
-                        })
-                        .catch(err => console.log("Auto sync drive error:", err));
-                }
-            }, []);
-
-            useEffect(() => {
-                localStorage.setItem('fb_db_url', fbDatabaseUrl);
-                
-                try {
-                    if (firebase.apps.length) {
-                        firebase.app().delete(); // Re-init on URL change
-                    }
-                    const config = {
-                        databaseURL: fbDatabaseUrl,
-                        apiKey: fbApiKey || "AIzaSyDummyKeyForTestingOnly"
-                    };
-                    firebase.initializeApp(config);
-                    dbRef.current = firebase.database();
-                } catch(e) {
-                    console.log("Firebase init error", e);
-                }
-            }, [fbDatabaseUrl, fbApiKey]);
-
-            useEffect(() => {
-                if (view === 'PLAYER_GAME' && joinedPin && dbRef.current) {
-                    const roomRef = dbRef.current.ref('rooms/' + joinedPin);
-                    
-                    const handleValue = (snapshot) => {
-                        const data = snapshot.val();
-                        if (data) {
-                            if (data.gameState) setGameState(data.gameState);
-                            if (data.currentQuestionIndex !== undefined) setCurrentQuestionIndex(data.currentQuestionIndex);
-                            if (data.timeLeft !== undefined) setTimeLeft(data.timeLeft);
-                            if (data.currentQuestion) setCurrentQuestionData(data.currentQuestion);
-                            if (data.autoNextTime !== undefined) setAutoNextTime(data.autoNextTime);
-                            
-                            if (data.gameState === 'QUESTION' && data.currentQuestionIndex !== currentQuestionIndex) {
-                                setHasAnswered(false);
-                                setSelectedOption(null);
-                            }
-                        }
-                    };
-
-                    roomRef.on('value', handleValue);
-                    return () => roomRef.off('value', handleValue);
-                }
-            }, [view, joinedPin, currentQuestionIndex]);
-
-            useEffect(() => {
-                if (view.startsWith('HOST') && pinCode && dbRef.current) {
-                    const playersRef = dbRef.current.ref('rooms/' + pinCode + '/players');
+                const activePin = pinCode || joinedPin;
+                if (activePin && dbRef.current) {
+                    const playersRef = dbRef.current.ref('rooms/' + activePin + '/players');
                     
                     const handlePlayers = (snapshot) => {
                         const data = snapshot.val();
@@ -252,7 +189,7 @@
                     playersRef.on('value', handlePlayers);
                     return () => playersRef.off('value', handlePlayers);
                 }
-            }, [view, pinCode]);
+            }, [view, pinCode, joinedPin]);
 
             const syncRoomStateToFirebase = (newState, questionIdx, timerSecs, autoNextSecs = 5, customQuestion = null) => {
                 if (!pinCode || !dbRef.current) return;
@@ -531,24 +468,36 @@
             const evaluateCurrentQuestion = () => {
                 setGameState('RESULT');
                 setAutoNextTime(5);
-                const currentQ = activeQuiz.questions[currentQuestionIndex];
                 
-                // Evaluate scores and update Firebase
-                players.forEach(p => {
-                    let earned = 0;
-                    if (p.lastAnswer === currentQ.correctOption) {
-                        const remTime = p.answerTime !== undefined && p.answerTime !== null ? p.answerTime : 1;
-                        const totalLimit = currentQ.timeLimit || 20;
-                        const timeRatio = Math.min(1, Math.max(0.1, remTime / totalLimit));
-                        earned = Math.round(currentQ.points * timeRatio);
-                    }
-                    const newScore = (p.score || 0) + earned;
-                    if (dbRef.current && pinCode) {
-                        dbRef.current.ref('rooms/' + pinCode + '/players/' + p.id).update({
+                if (!pinCode || !dbRef.current || !activeQuiz) return;
+                const currentQ = activeQuiz.questions[currentQuestionIndex];
+                if (!currentQ) return;
+
+                // ดึงข้อมูลผู้เล่นล่าสุดจาก Firebase Realtime Database โดยตรงเพื่อคิดคะแนน
+                dbRef.current.ref('rooms/' + pinCode + '/players').once('value', (snapshot) => {
+                    const data = snapshot.val();
+                    if (!data) return;
+
+                    Object.keys(data).forEach(id => {
+                        const p = data[id];
+                        let earned = 0;
+                        
+                        // ตรวจเช็กคำตอบโดยแปลงเป็นตัวเลขเพื่อป้องกันเรื่อง Type Mismatch
+                        if (p.lastAnswer !== null && p.lastAnswer !== undefined && Number(p.lastAnswer) === Number(currentQ.correctOption)) {
+                            const remTime = p.answerTime !== undefined && p.answerTime !== null ? Number(p.answerTime) : 1;
+                            const totalLimit = Number(currentQ.timeLimit) || 20;
+                            const timeRatio = Math.min(1, Math.max(0.1, remTime / totalLimit));
+                            earned = Math.round((Number(currentQ.points) || 1000) * timeRatio);
+                        }
+                        
+                        const newScore = (Number(p.score) || 0) + earned;
+
+                        // อัปเดตคะแนนใหม่ลง Firebase
+                        dbRef.current.ref('rooms/' + pinCode + '/players/' + id).update({
                             score: newScore,
                             lastEarned: earned
                         });
-                    }
+                    });
                 });
 
                 syncRoomStateToFirebase('RESULT', currentQuestionIndex, 0, 5);
@@ -559,14 +508,20 @@
                     const nextIdx = currentQuestionIndex + 1;
                     setCurrentQuestionIndex(nextIdx);
                     
-                    // Reset player last answers on Firebase
-                    players.forEach(p => {
-                        if (dbRef.current && pinCode) {
-                            dbRef.current.ref('rooms/' + pinCode + '/players/' + p.id).update({
-                                lastAnswer: null
-                            });
-                        }
-                    });
+                    // รีเซ็ตคำตอบล่าสุดของผู้เล่นทุกคนใน Firebase สำหรับข้อถัดไป
+                    if (dbRef.current && pinCode) {
+                        dbRef.current.ref('rooms/' + pinCode + '/players').once('value', (snapshot) => {
+                            const data = snapshot.val();
+                            if (data) {
+                                Object.keys(data).forEach(id => {
+                                    dbRef.current.ref('rooms/' + pinCode + '/players/' + id).update({
+                                        lastAnswer: null,
+                                        answerTime: 0
+                                    });
+                                });
+                            }
+                        });
+                    }
 
                     setGameState('QUESTION');
                     const t = activeQuiz.questions[nextIdx]?.timeLimit || 20;
@@ -1326,12 +1281,3 @@
 
 ---
 
-### 🛠️ วิธีทำเพื่อเชื่อมต่อตรงกัน 100% (ง่ายที่สุด):
-
-1. **ก๊อปปี้ Firebase Realtime Database URL ของคุณ** (เช่น `https://xxx-default-rtdb.asia-southeast1.firebasedatabase.app`)
-2. เปิดไฟล์ `index.html` บน GitHub แล้วไปที่บรรทัด **36** หาข้อความนี้:
-   ```javascript
-   const DEFAULT_FB_URL = "https://mycompany-kahoot-default-rtdb.asia-southeast1.firebasedatabase.app";
-   ```
-3. นำ URL ของคุณวางแทนที่ในเครื่องหมายคำพูด `"..."` แล้วกด **Commit changes** บันทึกไฟล์
-4. **เรียบร้อยครับ!** ต่อไปนี้ ทั้งคอมพิวเตอร์และมือถือทุกเครื่องที่เปิดลิงก์ GitHub จะดึง Firebase URL เดียวกันนี้มาเชื่อมต่อกันทันทีโดยไม่แยกห้องกันอีกต่อไปครับ
