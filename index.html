@@ -165,25 +165,44 @@
             const [selectedOption, setSelectedOption] = useState(null);
 
             useEffect(() => {
-                localStorage.setItem('company_kahoot_quizzes', JSON.stringify(quizzes));
-            }, [quizzes]);
-
-            useEffect(() => {
-                localStorage.setItem('kahoot_google_script_url', googleScriptUrl);
-            }, [googleScriptUrl]);
+                // ดึงข้อมูลชุดคำถามและ Firebase Config ล่าสุดจาก Google Drive อัตโนมัติเมื่อเปิดเว็บ
+                if (googleScriptUrl) {
+                    fetch(googleScriptUrl)
+                        .then(res => res.json())
+                        .then(data => {
+                            if (data) {
+                                if (Array.isArray(data) && data.length > 0) {
+                                    setQuizzes(data);
+                                } else if (data.quizzes && Array.isArray(data.quizzes)) {
+                                    setQuizzes(data.quizzes);
+                                    if (data.fbDatabaseUrl) {
+                                        setFbDatabaseUrl(data.fbDatabaseUrl);
+                                        localStorage.setItem('fb_db_url', data.fbDatabaseUrl);
+                                    }
+                                    if (data.fbApiKey) {
+                                        setFbApiKey(data.fbApiKey);
+                                        localStorage.setItem('fb_api_key', data.fbApiKey);
+                                    }
+                                }
+                            }
+                        })
+                        .catch(err => console.log("Auto sync drive error:", err));
+                }
+            }, []);
 
             useEffect(() => {
                 localStorage.setItem('fb_db_url', fbDatabaseUrl);
                 localStorage.setItem('fb_api_key', fbApiKey);
                 
                 try {
-                    if (!firebase.apps.length) {
-                        const config = {
-                            databaseURL: fbDatabaseUrl,
-                            apiKey: fbApiKey || "AIzaSyDummyKeyForTestingOnly"
-                        };
-                        firebase.initializeApp(config);
+                    if (firebase.apps.length) {
+                        firebase.app().delete(); // Re-init on URL change
                     }
+                    const config = {
+                        databaseURL: fbDatabaseUrl,
+                        apiKey: fbApiKey || "AIzaSyDummyKeyForTestingOnly"
+                    };
+                    firebase.initializeApp(config);
                     dbRef.current = firebase.database();
                 } catch(e) {
                     console.log("Firebase init error", e);
@@ -353,13 +372,18 @@
                 setIsSyncingDrive(true);
                 setDriveSyncMessage('กำลังบันทึกลง Google Drive...');
                 try {
+                    const payload = {
+                        quizzes: quizzes,
+                        fbDatabaseUrl: fbDatabaseUrl,
+                        fbApiKey: fbApiKey
+                    };
                     await fetch(googleScriptUrl, {
                         method: 'POST',
                         mode: 'no-cors',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(quizzes)
+                        body: JSON.stringify(payload)
                     });
-                    setDriveSyncMessage('✅ บันทึกลง Drive เรียบร้อยแล้ว!');
+                    setDriveSyncMessage('✅ บันทึกชุดคำถามและ Firebase Config ลง Drive เรียบร้อย!');
                 } catch (err) {
                     setDriveSyncMessage('❌ เกิดข้อผิดพลาดในการเชื่อมต่อ');
                 } finally {
@@ -604,8 +628,12 @@
                 const myId = 'p-' + Date.now();
                 setMyPlayerId(myId);
 
-                if (dbRef.current) {
-                    dbRef.current.ref('rooms/' + joinedPin).once('value', (snapshot) => {
+                if (!dbRef.current) {
+                    return alert('❌ ไม่สามารถเชื่อมต่อระบบ Realtime Database ได้ กรุณาตรวจสอบการตั้งค่า Firebase');
+                }
+
+                dbRef.current.ref('rooms/' + joinedPin).once('value')
+                    .then((snapshot) => {
                         if (snapshot.exists()) {
                             dbRef.current.ref('rooms/' + joinedPin + '/players/' + myId).set({
                                 name: playerName,
@@ -613,14 +641,17 @@
                                 lastAnswer: null,
                                 answerTime: 0,
                                 answersHistory: {}
+                            }).then(() => {
+                                setView('PLAYER_GAME');
+                                playSound('correct');
                             });
-                            setView('PLAYER_GAME');
-                            playSound('correct');
                         } else {
-                            alert('❌ ไม่พบห้องรหัส PIN นี้ กรุณาตรวจสอบเลข PIN อีกครั้ง');
+                            alert('❌ ไม่พบห้องรหัส PIN นี้ (' + joinedPin + ')\n\nกรุณาตรวจสอบว่า:\n1. ใส่เลข PIN ถูกต้อง\n2. วิทยากรได้กดเปิดหน้าห้อง (Host Lobby) อยู่');
                         }
+                    })
+                    .catch((err) => {
+                        alert('❌ ไม่สามารถเชื่อมต่อฐานข้อมูลได้: ' + err.message + '\n\nกรุณาตรวจสอบว่า Firebase URL ในหน้า Admin ถูกต้อง');
                     });
-                }
             };
 
             const handleAnswerSubmit = (optionIndex) => {
@@ -1038,37 +1069,14 @@
                         )}
 
                         {/* 5. HOST LOBBY */}
-                        {}
                         {view === 'HOST_LOBBY' && (
                             <div className="text-center space-y-8">
                                 <div className="bg-slate-800 border-2 border-purple-500/40 p-6 rounded-3xl inline-block max-w-xl w-full shadow-2xl">
                                     <p className="text-slate-400 text-sm font-semibold uppercase tracking-wider mb-1">สแกนรหัส PIN เพื่อเข้าร่วม</p>
                                     <div className="text-6xl font-black tracking-widest text-yellow-400 my-2 my-auto">{pinCode}</div>
                                     <p className="text-xs text-slate-400">เข้าผ่านมือถือแล้วเลือก "เข้าร่วมเล่น" ใส่ PIN ด้านบนนี้</p>
-                                </div>
-
-                                <div>
-                                    <div className="flex justify-between items-center max-w-2xl mx-auto mb-4">
-                                        <h3 className="font-bold text-lg text-slate-300">
-                                            ผู้เล่นที่เข้ามาแล้ว ({players.length} คน)
-                                        </h3>
-                                        <button 
-                                            onClick={addBotPlayer}
-                                            className="bg-slate-800 hover:bg-slate-700 text-xs px-3 py-1.5 rounded-lg border border-slate-700">
-                                            🤖 จำลองเพิ่ม Bot
-                                        </button>
-                                    </div>
-
-                                    <div className="flex flex-wrap justify-center gap-3 max-w-3xl mx-auto min-h-[120px] p-4 bg-slate-800/30 rounded-2xl border border-slate-800">
-                                        {players.length === 0 ? (
-                                            <p className="text-slate-500 my-auto text-sm">กำลังรอผู้เล่นเข้าร่วมห้องผ่าน Firebase Realtime...</p>
-                                        ) : (
-                                            players.map(p => (
-                                                <div key={p.id} className="bg-purple-900/60 border border-purple-500/40 px-4 py-2 rounded-xl text-sm font-bold animate-bounce-short">
-                                                    👤 {p.name}
-                                                </div>
-                                            ))
-                                        )}
+                                    <div className="mt-3 inline-block bg-slate-900 border border-slate-700 px-3 py-1 rounded-full text-[10px] text-slate-400">
+                                        🔗 Firebase Server: {fbDatabaseUrl.replace('https://', '').split('.')[0]}
                                     </div>
                                 </div>
 
@@ -1192,7 +1200,6 @@
                         )}
 
                         {/* 7. PLAYER JOIN VIEW */}
-                        {}
                         {view === 'PLAYER_JOIN' && (
                             <div className="max-w-md mx-auto bg-slate-800 p-8 rounded-3xl border border-slate-700 shadow-2xl">
                                 <h2 className="text-2xl font-bold text-center mb-6 text-blue-400">เข้าร่วมเกมตอบคำถาม</h2>
@@ -1223,101 +1230,10 @@
                                         เข้าร่วมเลย ➔
                                     </button>
                                 </form>
-                            </div>
-                        )}
-
-                        {/* 8. PLAYER GAME VIEW */}
-                        {}
-                        {view === 'PLAYER_GAME' && (
-                            <div className="max-w-md mx-auto text-center space-y-6">
-                                <div className="bg-slate-800 p-4 rounded-2xl border border-slate-700 flex justify-between items-center">
-                                    <div>
-                                        <span className="text-xs text-slate-400">ผู้เล่น:</span>
-                                        <span className="font-bold text-blue-300 ml-2">{playerName}</span>
-                                    </div>
-                                    {gameState === 'QUESTION' && (
-                                        <span className="bg-purple-600 text-white font-black text-sm px-3 py-1 rounded-full animate-pulse border border-purple-400">
-                                            ⏱️ {timeLeft}s
-                                        </span>
-                                    )}
-                                </div>
-
-                                {gameState === 'LOBBY' && (
-                                    <div className="py-12 bg-slate-800/40 rounded-3xl border border-dashed border-slate-700">
-                                        <div className="text-4xl mb-3">⏳</div>
-                                        <h3 className="font-bold text-lg">เข้าร่วมห้องเรียบร้อย!</h3>
-                                        <p className="text-slate-400 text-sm mt-1">รอดูกระดานโปรเจกเตอร์และรอวิทยากรเริ่มเกม...</p>
-                                    </div>
-                                )}
-
-                                {gameState === 'QUESTION' && (
-                                    <div className="space-y-4">
-                                        {currentQuestionData?.questionText && (
-                                            <div className="bg-slate-800 border border-slate-700 p-4 rounded-2xl font-bold text-base text-yellow-300">
-                                                {currentQuestionData.questionText}
-                                            </div>
-                                        )}
-                                        <p className="text-xs font-semibold text-slate-400">เลือกคำตอบที่ถูกต้องบนจอมือถือของคุณ:</p>
-                                        <div className="grid grid-cols-1 gap-3">
-                                            {[0, 1, 2, 3].map((optIdx) => {
-                                                const optionText = currentQuestionData?.options?.[optIdx] || `ตัวเลือก ${optIdx + 1}`;
-                                                return (
-                                                    <button 
-                                                        key={optIdx}
-                                                        onClick={() => handleAnswerSubmit(optIdx)}
-                                                        disabled={hasAnswered}
-                                                        className={`${optionColors[optIdx]} p-4 rounded-2xl font-bold text-base flex items-center justify-between shadow-lg transition active:scale-95 ${
-                                                            hasAnswered && selectedOption === optIdx ? 'ring-4 ring-white scale-105' : ''
-                                                        } ${hasAnswered && selectedOption !== optIdx ? 'opacity-40 grayscale' : ''}`}>
-                                                        <span className="text-2xl font-black">{optionIcons[optIdx]}</span>
-                                                        <span className="text-sm font-semibold flex-1 text-center px-2">{optionText}</span>
-                                                    </button>
-                                                );
-                                            })}
-                                        </div>
-                                        {hasAnswered && (
-                                            <div className="p-3 bg-green-950/80 border border-green-500/40 text-green-300 rounded-xl text-xs font-bold">
-                                                🔒 ล็อกคำตอบเรียบร้อยแล้ว! รอวิทยากรเฉลย...
-                                            </div>
-                                        )}
-                                    </div>
-                                )}
-
-                                {(gameState === 'RESULT' || gameState === 'FINISHED') && (
-                                    <div className="py-8 bg-slate-800 rounded-3xl border border-slate-700 space-y-4">
-                                        <h3 className="font-bold text-xl text-yellow-400">สรุปผลคะแนนประจำข้อนี้</h3>
-                                        <p className="text-slate-400 text-xs">โปรดดูผลคะแนนสะสมและเฉลยบนหน้าจอวิทยากร</p>
-                                    </div>
-                                )}
-                            </div>
-                        )}
-
-                        {/* IMPORT MODAL */}
-                        {}
-                        {showImportModal && (
-                            <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
-                                <div className="bg-slate-800 border border-slate-700 p-6 rounded-2xl max-w-lg w-full space-y-4">
-                                    <h3 className="text-lg font-bold text-purple-300">📤 นำเข้าข้อมูลชุดคำถาม (Import JSON)</h3>
-                                    <p className="text-xs text-slate-400">วางโค้ดข้อความ JSON ที่ได้จากไฟล์สำรองข้อมูลเพื่อกู้คืนชุดคำถามทั้งหมด:</p>
-                                    <textarea 
-                                        rows="6"
-                                        value={importJsonText}
-                                        onChange={(e) => setImportJsonText(e.target.value)}
-                                        placeholder="วางโค้ด JSON ที่นี่..."
-                                        className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-xs font-mono text-slate-200 focus:outline-none focus:border-purple-500"
-                                    />
-                                    <div className="flex justify-end gap-2">
-                                        <button 
-                                            onClick={() => setShowImportModal(false)}
-                                            className="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-xl text-xs font-semibold">
-                                            ยกเลิก
-                                        </button>
-                                        <button 
-                                            onClick={handleImportBackup}
-                                            className="bg-purple-600 hover:bg-purple-500 px-4 py-2 rounded-xl text-xs font-bold">
-                                            ยืนยันนำเข้าข้อมูล
-                                        </button>
-                                    </div>
+                                <div className="mt-4 text-center">
+                                    <span className="text-[10px] text-slate-500 block truncate">
+                                        🌐 เชื่อมต่อ: {fbDatabaseUrl}
+                                    </span>
                                 </div>
                             </div>
                         )}
