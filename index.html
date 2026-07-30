@@ -251,7 +251,7 @@
                 }
             };
 
-            // --- BACKUP & RESTORE HANDLERS ---
+            // --- BACKUP, RESTORE & GOOGLE DRIVE HANDLERS ---
             const handleExportBackup = () => {
                 const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(quizzes, null, 2));
                 const downloadAnchor = document.createElement('a');
@@ -275,6 +275,47 @@
                     }
                 } catch(e) {
                     alert('⚠️ เกิดข้อผิดพลาดในการอ่านโค้ด JSON กรุณาตรวจสอบความถูกต้อง');
+                }
+            };
+
+            const handleSaveToGoogleDrive = async () => {
+                if (!googleScriptUrl) return alert('กรุณาระบุ Google Script URL');
+                setIsSyncingDrive(true);
+                setDriveSyncMessage('กำลังบันทึกลง Google Drive...');
+                try {
+                    await fetch(googleScriptUrl, {
+                        method: 'POST',
+                        mode: 'no-cors',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(quizzes)
+                    });
+                    setDriveSyncMessage('✅ บันทึกลง Drive เรียบร้อยแล้ว!');
+                } catch (err) {
+                    setDriveSyncMessage('❌ เกิดข้อผิดพลาดในการเชื่อมต่อ');
+                } finally {
+                    setIsSyncingDrive(false);
+                    setTimeout(() => setDriveSyncMessage(''), 4000);
+                }
+            };
+
+            const handleLoadFromGoogleDrive = async () => {
+                if (!googleScriptUrl) return alert('กรุณาระบุ Google Script URL');
+                setIsSyncingDrive(true);
+                setDriveSyncMessage('กำลังดึงคำถามจาก Google Drive...');
+                try {
+                    const res = await fetch(googleScriptUrl);
+                    const data = await res.json();
+                    if (Array.isArray(data) && data.length > 0) {
+                        setQuizzes(data);
+                        setDriveSyncMessage('✅ ดึงข้อมูลคำถามสำเร็จ!');
+                    } else {
+                        setDriveSyncMessage('⚠️ ไม่พบชุดคำถามใน Drive');
+                    }
+                } catch (err) {
+                    setDriveSyncMessage('❌ ไม่สามารถดึงข้อมูลจาก Drive ได้');
+                } finally {
+                    setIsSyncingDrive(false);
+                    setTimeout(() => setDriveSyncMessage(''), 4000);
                 }
             };
 
@@ -419,7 +460,7 @@
                 setAutoNextTime(5);
                 const currentQ = activeQuiz.questions[currentQuestionIndex];
                 
-                // คำนวณคะแนนผู้เล่นทุกคน: แปรผันตรงกับเวลาที่เหลืออยู่ขณะตอบ
+                // คำนวณคะแนนผู้เล่นทุกคน
                 setPlayers(prev => prev.map(p => {
                     if (p.lastAnswer === currentQ.correctOption) {
                         const remTime = p.answerTime !== undefined && p.answerTime !== null ? p.answerTime : 1;
@@ -675,7 +716,7 @@
                                         )}
                                     </div>
                                     <p className="text-xs text-slate-400">
-                                        นำ **Web App URL** ที่ได้จาก Google Apps Script ในโฟลเดอร์มาวาง เพื่อให้คลังคำถามซิงค์ตรงกับ Google Drive โดยอัตโนมัติ:
+                                        นำ Web App URL ที่ได้จาก Google Apps Script มาวางเพื่อซิงค์คลังคำถามตรงกับ Google Drive โดยอัตโนมัติ:
                                     </p>
                                     <div className="flex gap-2">
                                         <input 
@@ -1153,3 +1194,16 @@
     </script>
 </body>
 </html>
+```
+
+---
+
+### ขั้นตอนอัปเดตบน GitHub:
+1. ก๊อปปี้โค้ดในไฟล์ `index.html` ด้านบนทั้งหมด
+2. เข้าไปที่หน้า Repository ของคุณบน GitHub
+3. คลิกเข้าไปที่ไฟล์ `index.html` -> กดไอคอนดินสอ **Edit this file**
+4. ลบโค้ดเดิมแล้ววางโค้ดใหม่ทั้งหมดลงไป จากนั้นกด **Commit changes**
+5. เปิดเว็บของคุณโดยใช้ URL ที่ไม่มี `//` ซ้ำซ้อน ดังนี้:
+   `https://teerapong-wq.github.io/KNT-quiz-game-/`
+
+เมื่ออัปเดตแล้ว พอกดเข้าปุ่ม Admin แล้วใส่รหัสผ่าน `QCKNT10520` จะสามารถเข้ามาหน้าจัดการคำถามและปุ่มเชื่อมต่อ Google Drive ได้ตามปกติครับ
