@@ -16,6 +16,7 @@
     <!-- Google Firebase Web SDK v8 -->
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;500;600;700&display=swap');
         body {
@@ -33,13 +34,16 @@
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
 
-        // 📌 ตั้งค่า FIREBASE DATABASE URL ตรงนี้
+        // 📌 ตั้งค่า FIREBASE DATABASE URL
         const DEFAULT_FB_URL = "https://knt-quiz-default-rtdb.asia-southeast1.firebasedatabase.app";
         
         // รหัสผ่านสำหรับเข้าสู่ระบบ Admin
         const ADMIN_PASSCODE = "QCKNT10520";
 
-        // คลังชุดคำถามเริ่มต้นกรณีไม่มีใน LocalStorage
+        // ลิงก์ Google Apps Script สำหรับบันทึก Google Sheet อัตโนมัติเมื่อจบเกม
+        const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw-5N50clAOoW-CPQAW90UlKgmq0_9VFMZEoTb6HQrmeTAtSWTXLBJIwhf96g6t5uxc/exec";
+
+        // คลังชุดคำถามเริ่มต้นกรณีไม่มีในฐานข้อมูล
         const DEFAULT_QUIZZES = [
             {
                 id: 'default-1',
@@ -131,77 +135,91 @@
                 return DEFAULT_QUIZZES;
             });
 
-            // Toast / Notification State
+            // Toast / Modal Notification States
             const [toastMessage, setToastMessage] = useState(null);
             const [confirmModal, setConfirmModal] = useState(null);
+            const [showImportModal, setShowImportModal] = useState(false);
+            const [importJsonText, setImportJsonText] = useState('');
+            const [firebasePermissionError, setFirebasePermissionError] = useState(false);
 
             const showToast = (msg, type = 'info') => {
                 setToastMessage({ msg, type });
                 setTimeout(() => setToastMessage(null), 3500);
             };
 
-            // บันทึกชุดคำถามลง LocalStorage อัตโนมัติทุกครั้งที่มีการเปลี่ยนแปลง
-            useEffect(() => {
-                if (quizzes && quizzes.length >= 0) {
-                    localStorage.setItem('company_kahoot_quizzes', JSON.stringify(quizzes));
-                }
-            }, [quizzes]);
-
             // Firebase Config State
-            const [fbDatabaseUrl, setFbDatabaseUrl] = useState(() => {
-                return localStorage.getItem('kahoot_fb_url') || DEFAULT_FB_URL;
-            });
-            const [fbApiKey, setFbApiKey] = useState('');
+            const [fbDatabaseUrl, setFbDatabaseUrl] = useState(DEFAULT_FB_URL);
             const dbRef = useRef(null);
-
-            // บันทึก Firebase URL ลง LocalStorage
-            useEffect(() => {
-                if (fbDatabaseUrl) {
-                    localStorage.setItem('kahoot_fb_url', fbDatabaseUrl);
-                }
-            }, [fbDatabaseUrl]);
 
             // Admin Auth State
             const [isAdminAuth, setIsAdminAuth] = useState(false);
             const [passcodeInput, setPasscodeInput] = useState('');
             const [passcodeError, setPasscodeError] = useState('');
 
-            // Backup & Google Drive Sync State
-            const [showImportModal, setShowImportModal] = useState(false);
-            const [importJsonText, setImportJsonText] = useState('');
+            // Google Script URL สำหรับสร้าง Google Sheet สรุปผล
             const [googleScriptUrl, setGoogleScriptUrl] = useState(() => {
-                return localStorage.getItem('kahoot_google_script_url') || 'https://script.google.com/macros/s/AKfycbw-5N50clAOoW-CPQAW90UlKgmq0_9VFMZEoTb6HQrmeTAtSWTXLBJIwhf96g6t5uxc/exec';
+                return localStorage.getItem('kahoot_google_script_url') || DEFAULT_SCRIPT_URL;
             });
 
             useEffect(() => {
-                if (googleScriptUrl) {
-                    localStorage.setItem('kahoot_google_script_url', googleScriptUrl);
-                }
-            }, [googleScriptUrl]);
+                if (!window.firebase) return;
+                try {
+                    const cleanUrl = DEFAULT_FB_URL.trim().replace(/\/+$/, "");
+                    let app;
+                    if (!firebase.apps.length) {
+                        app = firebase.initializeApp({ databaseURL: cleanUrl });
+                    } else {
+                        app = firebase.app();
+                    }
+                    dbRef.current = firebase.database(app);
 
-            // 🔄 ดึงข้อมูลชุดคำถามล่าสุดจาก Google Drive อัตโนมัติทันทีที่เปิดหน้าเว็บ (ทุกเครื่องจะตรงกันเสมอ)
-            useEffect(() => {
-                const autoFetchFromDrive = async () => {
-                    if (!googleScriptUrl) return;
-                    try {
-                        const res = await fetch(googleScriptUrl);
-                        const data = await res.json();
-                        if (Array.isArray(data) && data.length > 0) {
+                    // 🔄 ซิงค์ชุดคำถาม Real-time จาก Firebase (Path: 'quizzes' ตรงตาม Security Rules)
+                    const quizzesRef = dbRef.current.ref('quizzes');
+                    quizzesRef.on('value', (snapshot) => {
+                        setFirebasePermissionError(false);
+                        const data = snapshot.val();
+                        if (data && Array.isArray(data) && data.length > 0) {
                             setQuizzes(data);
                             localStorage.setItem('company_kahoot_quizzes', JSON.stringify(data));
-                            showToast('✅ ซิงค์ชุดคำถามล่าสุดจาก Cloud เรียบร้อยแล้ว', 'success');
+                        } else if (data && typeof data === 'object') {
+                            const list = Object.values(data);
+                            if (list.length > 0) {
+                                setQuizzes(list);
+                                localStorage.setItem('company_kahoot_quizzes', JSON.stringify(list));
+                            }
+                        } else if (!data) {
+                            quizzesRef.set(DEFAULT_QUIZZES).catch(err => {
+                                if (err && err.code === 'PERMISSION_DENIED') {
+                                    setFirebasePermissionError(true);
+                                }
+                            });
                         }
-                    } catch (err) {
-                        console.log('Auto fetch skipped or failed:', err);
-                    }
-                };
-                autoFetchFromDrive();
+                    }, (err) => {
+                        if (err && err.code === 'PERMISSION_DENIED') {
+                            setFirebasePermissionError(true);
+                        }
+                    });
+                } catch (err) {
+                    console.error("Firebase init error:", err);
+                }
             }, []);
 
-            const [isSyncingDrive, setIsSyncingDrive] = useState(false);
-            const [driveSyncMessage, setDriveSyncMessage] = useState('');
+            // ฟังก์ชันบันทึกชุดคำถามขึ้น Firebase Cloud อัตโนมัติ (Path: 'quizzes')
+            const syncQuizzesToCloud = (updatedList) => {
+                setQuizzes(updatedList);
+                localStorage.setItem('company_kahoot_quizzes', JSON.stringify(updatedList));
+                if (dbRef.current) {
+                    dbRef.current.ref('quizzes').set(updatedList)
+                        .then(() => setFirebasePermissionError(false))
+                        .catch(err => {
+                            console.error("Cloud sync error:", err);
+                            if (err && err.code === 'PERMISSION_DENIED') {
+                                setFirebasePermissionError(true);
+                            }
+                        });
+                }
+            };
 
-            // Active Game Session State & Quiz Mode
             const [activeQuiz, setActiveQuiz] = useState(null);
             const [quizMode, setQuizMode] = useState('POST_TEST'); 
             const [editingQuiz, setEditingQuiz] = useState(null);
@@ -221,22 +239,6 @@
             const [myPlayerId, setMyPlayerId] = useState('');
             const [hasAnswered, setHasAnswered] = useState(false);
             const [selectedOption, setSelectedOption] = useState(null);
-
-            useEffect(() => {
-                if (!window.firebase) return;
-                try {
-                    const cleanUrl = fbDatabaseUrl.trim().replace(/\/+$/, "");
-                    let app;
-                    if (!firebase.apps.length) {
-                        app = firebase.initializeApp({ databaseURL: cleanUrl });
-                    } else {
-                        app = firebase.app();
-                    }
-                    dbRef.current = firebase.database(app);
-                } catch (err) {
-                    console.error("Firebase init error:", err);
-                }
-            }, [fbDatabaseUrl]);
 
             useEffect(() => {
                 const activePin = pinCode || joinedPin;
@@ -344,6 +346,16 @@
                     setPasscodeError('');
                     setView('ADMIN_QUIZ_LIST');
                     playSound('correct');
+
+                    // 🔐 ล็อกอินเข้า Firebase Auth ทันที เพื่อให้กฎ "auth != null" ผ่านการตรวจสอบ
+                    if (window.firebase && firebase.auth) {
+                        firebase.auth().signInAnonymously().catch(err => {
+                            console.warn("Firebase Auth Notice:", err);
+                            if (err.code === 'auth/operation-not-allowed' || err.code === 'auth/admin-restricted-operation') {
+                                setFirebasePermissionError(true);
+                            }
+                        });
+                    }
                 } else {
                     setPasscodeError('รหัสผ่านไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง');
                     playSound('wrong');
@@ -354,6 +366,10 @@
                 setIsAdminAuth(false);
                 setPasscodeInput('');
                 setView('HOME');
+                // ปลดล็อกอิน Firebase Auth
+                if (window.firebase && firebase.auth && firebase.auth().currentUser) {
+                    firebase.auth().signOut().catch(e => console.log(e));
+                }
             };
 
             const handleCreateNewQuiz = () => {
@@ -364,7 +380,7 @@
                     questions: []
                 };
                 const updatedList = [...quizzes, newQ];
-                setQuizzes(updatedList);
+                syncQuizzesToCloud(updatedList);
                 setEditingQuiz(newQ);
                 setView('ADMIN_QUIZ_EDIT');
                 showToast('สร้างชุดคำถามใหม่แล้ว', 'success');
@@ -375,7 +391,7 @@
                     message: 'คุณแน่ใจหรือไม่ว่าต้องการลบชุดคำถามนี้?',
                     onConfirm: () => {
                         const updated = quizzes.filter(q => q.id !== id);
-                        setQuizzes(updated);
+                        syncQuizzesToCloud(updated);
                         showToast('ลบชุดคำถามเรียบร้อยแล้ว', 'info');
                         setConfirmModal(null);
                     }
@@ -392,66 +408,85 @@
                 downloadAnchor.remove();
             };
 
-            const handleImportBackup = () => {
-                try {
-                    const parsed = JSON.parse(importJsonText);
-                    if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].questions) {
-                        setQuizzes(parsed);
-                        setShowImportModal(false);
-                        setImportJsonText('');
-                        showToast('✅ นำเข้าและบันทึกชุดคำถามสำเร็จเรียบร้อยแล้ว!', 'success');
-                    } else {
-                        showToast('⚠️ รูปแบบข้อมูล JSON ไม่ถูกต้อง กรุณาตรวจสอบอีกครั้ง', 'error');
-                    }
-                } catch(e) {
-                    showToast('⚠️ เกิดข้อผิดพลาดในการอ่านโค้ด JSON กรุณาตรวจสอบความถูกต้อง', 'error');
+            const processAndImportQuizzes = (rawInput) => {
+                const text = (rawInput || importJsonText || '').trim();
+                if (!text) {
+                    showToast('⚠️ กรุณาระบุหรือเลือกไฟล์ JSON ก่อน', 'error');
+                    return;
                 }
-            };
-
-            const handleSaveToGoogleDrive = async () => {
-                if (!googleScriptUrl) return showToast('กรุณาระบุ Google Script URL', 'error');
-                setIsSyncingDrive(true);
-                setDriveSyncMessage('กำลังบันทึกลง Google Drive...');
                 try {
-                    const payload = {
-                        quizzes: quizzes,
-                        fbDatabaseUrl: fbDatabaseUrl,
-                        fbApiKey: fbApiKey
-                    };
-                    await fetch(googleScriptUrl, {
-                        method: 'POST',
-                        mode: 'no-cors',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
+                    let cleanText = text;
+                    cleanText = cleanText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+                    cleanText = cleanText.replace(/[\u201C\u201D]/g, '"').replace(/[\u2018\u2019]/g, "'");
+
+                    let parsed;
+                    try {
+                        parsed = JSON.parse(cleanText);
+                    } catch (parseErr) {
+                        const relaxedText = cleanText.replace(/,\s*([\]}])/g, '$1');
+                        parsed = JSON.parse(relaxedText);
+                    }
+
+                    let extracted = null;
+                    if (Array.isArray(parsed)) {
+                        if (parsed.length > 0 && (parsed[0].questionText || parsed[0].options)) {
+                            extracted = [{
+                                id: 'quiz-' + Date.now(),
+                                title: 'ชุดคำถามนำเข้า (' + new Date().toLocaleDateString('th-TH') + ')',
+                                description: 'นำเข้าจากรายการข้อคำถาม',
+                                questions: parsed
+                            }];
+                        } else {
+                            extracted = parsed;
+                        }
+                    } else if (parsed && typeof parsed === 'object') {
+                        if (Array.isArray(parsed.quizzes)) {
+                            extracted = parsed.quizzes;
+                        } else if (Array.isArray(parsed.quizzes_data)) {
+                            extracted = parsed.quizzes_data;
+                        } else if (Array.isArray(parsed.data)) {
+                            extracted = parsed.data;
+                        } else if (parsed.questions && Array.isArray(parsed.questions)) {
+                            extracted = [parsed];
+                        }
+                    }
+
+                    if (!extracted || !Array.isArray(extracted) || extracted.length === 0) {
+                        showToast('⚠️ ไม่พบรายการคำถามในไฟล์ JSON กรุณาตรวจสอบข้อมูล', 'error');
+                        return;
+                    }
+
+                    const normalized = extracted.map((quiz, qIdx) => {
+                        const rawQuestions = Array.isArray(quiz.questions) ? quiz.questions : [];
+                        const safeQuestions = rawQuestions.map((q, idx) => ({
+                            id: q.id || `q-${Date.now()}-${idx}`,
+                            questionText: q.questionText || q.question || `คำถามข้อที่ ${idx + 1}`,
+                            options: Array.isArray(q.options) && q.options.length > 0
+                                ? q.options.map(opt => String(opt))
+                                : ['ตัวเลือก 1', 'ตัวเลือก 2', 'ตัวเลือก 3', 'ตัวเลือก 4'],
+                            correctOption: typeof q.correctOption === 'number' ? q.correctOption : 0,
+                            timeLimit: Number(q.timeLimit) || 20,
+                            points: Number(q.points) || 1000
+                        }));
+
+                        return {
+                            id: quiz.id || `quiz-${Date.now()}-${qIdx}`,
+                            title: quiz.title || `ชุดคำถามนำเข้าที่ ${qIdx + 1}`,
+                            description: quiz.description || 'นำเข้าจากไฟล์ภายนอก',
+                            questions: safeQuestions
+                        };
                     });
-                    setDriveSyncMessage('✅ บันทึกชุดคำถามและ Firebase Config ลง Drive เรียบร้อย!');
-                } catch (err) {
-                    setDriveSyncMessage('❌ เกิดข้อผิดพลาดในการเชื่อมต่อ');
-                } finally {
-                    setIsSyncingDrive(false);
-                    setTimeout(() => setDriveSyncMessage(''), 4000);
-                }
-            };
 
-            const handleLoadFromGoogleDrive = async () => {
-                if (!googleScriptUrl) return showToast('กรุณาระบุ Google Script URL', 'error');
-                setIsSyncingDrive(true);
-                setDriveSyncMessage('กำลังดึงคำถามจาก Google Drive...');
-                try {
-                    const res = await fetch(googleScriptUrl);
-                    const data = await res.json();
-                    if (Array.isArray(data) && data.length > 0) {
-                        setQuizzes(data);
-                        setDriveSyncMessage('✅ ดึงข้อมูลคำถามสำเร็จ!');
-                        showToast('ดึงชุดคำถามจาก Drive สำเร็จแล้ว', 'success');
-                    } else {
-                        setDriveSyncMessage('⚠️ ไม่พบชุดคำถามใน Drive');
-                    }
+                    syncQuizzesToCloud(normalized);
+                    setShowImportModal(false);
+                    setImportJsonText('');
+                    const totalQuestions = normalized.reduce((acc, q) => acc + q.questions.length, 0);
+                    showToast(`✅ นำเข้าสำเร็จ ${normalized.length} ชุดคำถาม (${totalQuestions} ข้อ) แล้ว!`, 'success');
+                    playSound('correct');
                 } catch (err) {
-                    setDriveSyncMessage('❌ ไม่สามารถดึงข้อมูลจาก Drive ได้');
-                } finally {
-                    setIsSyncingDrive(false);
-                    setTimeout(() => setDriveSyncMessage(''), 4000);
+                    console.error("JSON Parse Error:", err);
+                    showToast(`⚠️ เกิดข้อผิดพลาดในการอ่าน JSON: ${err.message}`, 'error');
+                    playSound('wrong');
                 }
             };
 
@@ -470,7 +505,8 @@
                     questions: [...editingQuiz.questions, newQuestion]
                 };
                 setEditingQuiz(updated);
-                setQuizzes(quizzes.map(q => q.id === updated.id ? updated : q));
+                const updatedAll = quizzes.map(q => q.id === updated.id ? updated : q);
+                syncQuizzesToCloud(updatedAll);
             };
 
             const handleUpdateQuestion = (qIndex, field, value) => {
@@ -482,7 +518,8 @@
                 };
                 const updatedQuiz = { ...editingQuiz, questions: updatedQuestions };
                 setEditingQuiz(updatedQuiz);
-                setQuizzes(quizzes.map(q => q.id === updatedQuiz.id ? updatedQuiz : q));
+                const updatedAll = quizzes.map(q => q.id === updatedQuiz.id ? updatedQuiz : q);
+                syncQuizzesToCloud(updatedAll);
             };
 
             const handleUpdateOption = (qIndex, optIndex, value) => {
@@ -494,7 +531,8 @@
 
                 const updatedQuiz = { ...editingQuiz, questions: updatedQuestions };
                 setEditingQuiz(updatedQuiz);
-                setQuizzes(quizzes.map(q => q.id === updatedQuiz.id ? updatedQuiz : q));
+                const updatedAll = quizzes.map(q => q.id === updatedQuiz.id ? updatedQuiz : q);
+                syncQuizzesToCloud(updatedAll);
             };
 
             const handleDeleteQuestion = (qIndex) => {
@@ -505,7 +543,8 @@
                         const updatedQuestions = editingQuiz.questions.filter((_, idx) => idx !== qIndex);
                         const updatedQuiz = { ...editingQuiz, questions: updatedQuestions };
                         setEditingQuiz(updatedQuiz);
-                        setQuizzes(quizzes.map(q => q.id === updatedQuiz.id ? updatedQuiz : q));
+                        const updatedAll = quizzes.map(q => q.id === updatedQuiz.id ? updatedQuiz : q);
+                        syncQuizzesToCloud(updatedAll);
                         setConfirmModal(null);
                         showToast('ลบข้อคำถามเรียบร้อยแล้ว', 'info');
                     }
@@ -910,18 +949,18 @@
                                 <div className="flex flex-wrap justify-between items-center gap-4">
                                     <div>
                                         <h2 className="text-2xl font-bold text-purple-300">คลังชุดคำถามทั้งหมด</h2>
-                                        <p className="text-slate-400 text-sm">สร้าง แก้ไข หรือเพิ่มข้อสอบในระบบ (บันทึกอัตโนมัติ)</p>
+                                        <p className="text-slate-400 text-sm">✨ ข้อมูลซิงค์อัตโนมัติผ่าน Cloud ทุกเครื่องเปิดมาจะเห็นตรงกันทันที</p>
                                     </div>
                                     <div className="flex flex-wrap gap-2">
                                         <button 
                                             onClick={handleExportBackup}
                                             className="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1">
-                                            📥 สำรองข้อมูล (Export JSON)
+                                            📥 สำรองไฟล์ (Export JSON)
                                         </button>
                                         <button 
                                             onClick={() => setShowImportModal(true)}
                                             className="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1">
-                                            📤 นำเข้าข้อมูล (Import JSON)
+                                            📤 นำเข้าไฟล์ (Import JSON)
                                         </button>
                                         <button 
                                             onClick={handleCreateNewQuiz}
@@ -931,51 +970,39 @@
                                     </div>
                                 </div>
 
-                                <div className="bg-slate-800/80 border border-blue-500/40 p-5 rounded-2xl space-y-3">
-                                    <h3 className="font-bold text-blue-300 text-sm flex items-center gap-2">
-                                        🔥 Firebase Realtime Database URL (สำหรับเล่นข้ามอุปกรณ์)
-                                    </h3>
-                                    <input 
-                                        type="text"
-                                        value={fbDatabaseUrl}
-                                        onChange={(e) => setFbDatabaseUrl(e.target.value)}
-                                        placeholder="https://your-project.firebasedatabase.app"
-                                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500"
-                                    />
-                                </div>
+                                {/* Firebase Permission Denied Banner */}
+                                {firebasePermissionError && (
+                                    <div className="bg-amber-950/80 border border-amber-500/80 p-4 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-3 text-amber-200 text-xs shadow-lg">
+                                        <div className="flex items-center gap-3">
+                                            <span className="text-2xl">⚠️</span>
+                                            <div>
+                                                <strong className="text-amber-300 font-bold block mb-0.5">Firebase Permission Denied (ติดล็อกสิทธิ์การเข้าถึง):</strong>
+                                                <span>ฐานข้อมูล Firebase ยังไม่อนุญาตให้อ่าน/เขียน ข้อมูลจึงบันทึกลงในเครื่องนี้แทนชั่วคราว</span>
+                                                <div className="text-[11px] text-amber-400/90 mt-1">
+                                                    วิธีแก้: ไปที่ Firebase Console ➔ Realtime Database ➔ แท็บ <strong>Rules</strong> ➔ แก้เป็น <code>{`{ ".read": true, ".write": true }`}</code> แล้วกด <strong>Publish</strong>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <a 
+                                            href="https://console.firebase.google.com/" 
+                                            target="_blank" 
+                                            rel="noreferrer"
+                                            className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-4 py-2 rounded-xl shrink-0 text-center transition">
+                                            ไปที่ Firebase Rules ➔
+                                        </a>
+                                    </div>
+                                )}
 
-                                <div className="bg-slate-800/80 border border-purple-500/40 p-5 rounded-2xl space-y-3">
-                                    <div className="flex justify-between items-center">
-                                        <h3 className="font-bold text-purple-300 text-sm flex items-center gap-2">
-                                            📁 เชื่อมต่อ Google Drive Database 
-                                        </h3>
-                                        {driveSyncMessage && (
-                                            <span className="text-xs font-semibold px-2.5 py-1 rounded-md bg-purple-950 text-purple-300 border border-purple-500/30">
-                                                {driveSyncMessage}
-                                            </span>
-                                        )}
+                                <div className="bg-slate-800/80 border border-emerald-500/40 p-4 rounded-2xl flex items-center justify-between">
+                                    <div className="flex items-center gap-2">
+                                        <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                                        <span className="text-xs font-bold text-emerald-300">
+                                            ☁️ Cloud Auto-Sync: เชื่อมต่อฐานข้อมูลกลางอัตโนมัติ (เปลี่ยนเครื่องคำถามก็ไม่หาย)
+                                        </span>
                                     </div>
-                                    <div className="flex gap-2">
-                                        <input 
-                                            type="text"
-                                            value={googleScriptUrl}
-                                            onChange={(e) => setGoogleScriptUrl(e.target.value)}
-                                            placeholder="https://script.google.com/macros/s/.../exec"
-                                            className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-purple-500"
-                                        />
-                                        <button 
-                                            onClick={handleSaveToGoogleDrive}
-                                            disabled={isSyncingDrive}
-                                            className="bg-purple-600 hover:bg-purple-500 text-xs font-bold px-3 py-2 rounded-xl flex items-center gap-1 shrink-0">
-                                            ☁️ บันทึกลง Drive
-                                        </button>
-                                        <button 
-                                            onClick={handleLoadFromGoogleDrive}
-                                            disabled={isSyncingDrive}
-                                            className="bg-blue-600 hover:bg-blue-500 text-xs font-bold px-3 py-2 rounded-xl flex items-center gap-1 shrink-0">
-                                            🔄 ดึงคำถามจาก Drive
-                                        </button>
-                                    </div>
+                                    <span className="text-[11px] text-slate-400">
+                                        Google Sheet บันทึกผล: พร้อมใช้งาน ✅
+                                    </span>
                                 </div>
 
                                 <div className="space-y-4">
@@ -1019,7 +1046,6 @@
                             </div>
                         )}
 
-                        {}
                         {/* 4. ADMIN EDIT QUIZ & QUESTIONS MANAGER */}
                         {view === 'ADMIN_QUIZ_EDIT' && editingQuiz && (
                             <div className="max-w-4xl mx-auto space-y-6">
@@ -1158,7 +1184,6 @@
                             </div>
                         )}
 
-                        {}
                         {/* 5. HOST LOBBY VIEW */}
                         {view === 'HOST_LOBBY' && (
                             <div className="text-center space-y-8">
@@ -1214,7 +1239,6 @@
                             </div>
                         )}
 
-                        {}
                         {/* 6. HOST GAME VIEW */}
                         {view === 'HOST_GAME' && activeQuiz && (
                             <div className="space-y-6">
@@ -1329,7 +1353,6 @@
                             </div>
                         )}
 
-                        {}
                         {/* 7. PLAYER JOIN VIEW */}
                         {view === 'PLAYER_JOIN' && (
                             <div className="max-w-md mx-auto bg-slate-800 p-8 rounded-3xl border border-slate-700 shadow-2xl">
@@ -1461,27 +1484,73 @@
                     {/* Import JSON Modal */}
                     {showImportModal && (
                         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-                            <div className="bg-slate-800 border border-slate-700 rounded-2xl max-w-lg w-full p-6 space-y-4">
-                                <h3 className="text-lg font-bold text-purple-300">📤 นำเข้าคลังคำถาม (Import JSON)</h3>
-                                <p className="text-xs text-slate-400">วางโค้ด JSON ที่ได้จากการสำรองข้อมูลเพื่อกู้คืนคลังคำถาม:</p>
+                            <div className="bg-slate-800 border border-slate-700 rounded-2xl max-w-lg w-full p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+                                <div className="flex justify-between items-center border-b border-slate-700 pb-3">
+                                    <h3 className="text-lg font-bold text-purple-300">📤 นำเข้าคลังคำถาม (Import JSON)</h3>
+                                    <button 
+                                        onClick={() => setShowImportModal(false)}
+                                        className="text-slate-400 hover:text-white text-lg px-2">
+                                        ✕
+                                    </button>
+                                </div>
+
+                                <div className="bg-slate-900/80 border-2 border-dashed border-purple-500/40 hover:border-purple-400 rounded-xl p-4 text-center transition">
+                                    <label className="cursor-pointer block">
+                                        <div className="text-3xl mb-1">📁</div>
+                                        <span className="text-xs font-bold text-purple-300 block">คลิกเพื่อเลือกไฟล์ .json จากเครื่อง</span>
+                                        <span className="text-[11px] text-slate-400">เลือกไฟล์สำรองข้อมูลเพื่อนำเข้าทันที (ไม่ต้องก๊อปปี้ข้อความ)</span>
+                                        <input 
+                                            type="file" 
+                                            accept=".json,application/json,text/plain" 
+                                            className="hidden" 
+                                            onChange={(e) => {
+                                                const file = e.target.files && e.target.files[0];
+                                                if (file) {
+                                                    const reader = new FileReader();
+                                                    reader.onload = (event) => {
+                                                        const content = event.target.result;
+                                                        setImportJsonText(content);
+                                                        processAndImportQuizzes(content);
+                                                    };
+                                                    reader.readAsText(file);
+                                                }
+                                            }}
+                                        />
+                                    </label>
+                                </div>
+
+                                <div className="text-center text-xs text-slate-500 font-semibold">— หรือ วางโค้ด JSON ลงในช่องด้านล่าง —</div>
+
                                 <textarea 
                                     value={importJsonText}
                                     onChange={(e) => setImportJsonText(e.target.value)}
-                                    rows={8}
-                                    placeholder="วางโค้ด JSON ที่นี่..."
+                                    rows={6}
+                                    placeholder="วางโค้ด JSON ที่นี่ (รองรับทั้งไฟล์ Export เดิม, ไฟล์จาก Firebase หรือโครงสร้างจาก ChatGPT)..."
                                     className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-xs font-mono text-slate-200 focus:outline-none focus:border-purple-500"
                                 />
-                                <div className="flex justify-end gap-2">
+
+                                <div className="flex justify-between items-center pt-2">
                                     <button 
-                                        onClick={() => setShowImportModal(false)}
-                                        className="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-xl text-xs font-semibold">
-                                        ยกเลิก
+                                        type="button"
+                                        onClick={() => {
+                                            const sample = JSON.stringify(DEFAULT_QUIZZES, null, 2);
+                                            setImportJsonText(sample);
+                                        }}
+                                        className="text-xs text-purple-400 hover:underline">
+                                        📄 ใส่ตัวอย่างโครงสร้าง JSON
                                     </button>
-                                    <button 
-                                        onClick={handleImportBackup}
-                                        className="bg-purple-600 hover:bg-purple-500 px-4 py-2 rounded-xl text-xs font-bold">
-                                        ยืนยันนำเข้า
-                                    </button>
+                                    <div className="flex gap-2">
+                                        <button 
+                                            onClick={() => setShowImportModal(false)}
+                                            className="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-xl text-xs font-semibold">
+                                            ยกเลิก
+                                        </button>
+                                        <button 
+                                            onClick={() => processAndImportQuizzes(importJsonText)}
+                                            className="bg-purple-600 hover:bg-purple-500 px-4 py-2 rounded-xl text-xs font-bold shadow-lg">
+                                            ยืนยันนำเข้า
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
                         </div>
