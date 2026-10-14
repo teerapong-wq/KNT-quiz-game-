@@ -37,6 +37,10 @@
         // 📌 ตั้งค่า FIREBASE DATABASE URL
         const DEFAULT_FB_URL = "https://knt-quiz-default-rtdb.asia-southeast1.firebasedatabase.app";
         
+        // 🔑 (ตัวเลือก) Firebase Web API Key: กรณีใช้กฎ "auth != null" ใน Firebase Rules
+        // หากตั้ง Firebase Rules เป็น { ".write": true } สามารถเว้นว่างไว้ได้เลย
+        const DEFAULT_API_KEY = "";
+
         // รหัสผ่านสำหรับเข้าสู่ระบบ Admin
         const ADMIN_PASSCODE = "QCKNT10520";
 
@@ -166,8 +170,12 @@
                 try {
                     const cleanUrl = DEFAULT_FB_URL.trim().replace(/\/+$/, "");
                     let app;
+                    const fbConfig = { databaseURL: cleanUrl };
+                    if (DEFAULT_API_KEY && DEFAULT_API_KEY.trim()) {
+                        fbConfig.apiKey = DEFAULT_API_KEY.trim();
+                    }
                     if (!firebase.apps.length) {
-                        app = firebase.initializeApp({ databaseURL: cleanUrl });
+                        app = firebase.initializeApp(fbConfig);
                     } else {
                         app = firebase.app();
                     }
@@ -188,14 +196,11 @@
                                 localStorage.setItem('company_kahoot_quizzes', JSON.stringify(list));
                             }
                         } else if (!data) {
-                            quizzesRef.set(DEFAULT_QUIZZES).catch(err => {
-                                if (err && err.code === 'PERMISSION_DENIED') {
-                                    setFirebasePermissionError(true);
-                                }
-                            });
+                            // ใช้ค่าเริ่มต้นในเครื่องโดยไม่พยายามเขียนทับ Cloud ขณะยังไม่ได้ยืนยันสิทธิ์
+                            setQuizzes(DEFAULT_QUIZZES);
                         }
                     }, (err) => {
-                        if (err && err.code === 'PERMISSION_DENIED') {
+                        if (err && (err.code === 'PERMISSION_DENIED' || err.message?.includes('PERMISSION_DENIED'))) {
                             setFirebasePermissionError(true);
                         }
                     });
@@ -212,9 +217,11 @@
                     dbRef.current.ref('quizzes').set(updatedList)
                         .then(() => setFirebasePermissionError(false))
                         .catch(err => {
-                            console.error("Cloud sync error:", err);
-                            if (err && err.code === 'PERMISSION_DENIED') {
+                            if (err && (err.code === 'PERMISSION_DENIED' || err.message?.includes('PERMISSION_DENIED'))) {
                                 setFirebasePermissionError(true);
+                                showToast('⚠️ ฐานข้อมูล Firebase ไม่อนุญาตให้เขียนข้อมูล (ติดสิทธิ์ Rules)', 'error');
+                            } else {
+                                console.error("Cloud sync error:", err);
                             }
                         });
                 }
@@ -347,14 +354,18 @@
                     setView('ADMIN_QUIZ_LIST');
                     playSound('correct');
 
-                    // 🔐 ล็อกอินเข้า Firebase Auth ทันที เพื่อให้กฎ "auth != null" ผ่านการตรวจสอบ
-                    if (window.firebase && firebase.auth) {
-                        firebase.auth().signInAnonymously().catch(err => {
-                            console.warn("Firebase Auth Notice:", err);
-                            if (err.code === 'auth/operation-not-allowed' || err.code === 'auth/admin-restricted-operation') {
-                                setFirebasePermissionError(true);
-                            }
-                        });
+                    // 🔐 ล็อกอินเข้า Firebase Auth เฉพาะเมื่อมีการตั้งค่า API Key
+                    if (window.firebase && firebase.auth && DEFAULT_API_KEY && DEFAULT_API_KEY.trim()) {
+                        try {
+                            firebase.auth().signInAnonymously().catch(err => {
+                                console.warn("Firebase Auth Notice:", err);
+                                if (err.code === 'auth/operation-not-allowed' || err.code === 'auth/admin-restricted-operation' || err.code === 'auth/invalid-api-key') {
+                                    setFirebasePermissionError(true);
+                                }
+                            });
+                        } catch (authErr) {
+                            console.warn("Auth initialization error:", authErr);
+                        }
                     }
                 } else {
                     setPasscodeError('รหัสผ่านไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง');
@@ -366,9 +377,13 @@
                 setIsAdminAuth(false);
                 setPasscodeInput('');
                 setView('HOME');
-                // ปลดล็อกอิน Firebase Auth
-                if (window.firebase && firebase.auth && firebase.auth().currentUser) {
-                    firebase.auth().signOut().catch(e => console.log(e));
+                // ปลดล็อกอิน Firebase Auth (ถ้ามี)
+                if (window.firebase && firebase.auth && DEFAULT_API_KEY && DEFAULT_API_KEY.trim()) {
+                    try {
+                        if (firebase.auth().currentUser) {
+                            firebase.auth().signOut().catch(e => console.log(e));
+                        }
+                    } catch (e) {}
                 }
             };
 
