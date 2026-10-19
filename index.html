@@ -32,22 +32,21 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useRef } = React;
+        const { useState, useEffect, useRef, Component } = React;
 
-        // 📌 ตั้งค่า FIREBASE DATABASE URL
+        // 📌 ค่า FIREBASE DATABASE URL หลัก
         const DEFAULT_FB_URL = "https://knt-quiz-default-rtdb.asia-southeast1.firebasedatabase.app";
         
-        // 🔑 (ตัวเลือก) Firebase Web API Key: กรณีใช้กฎ "auth != null" ใน Firebase Rules
-        // หากตั้ง Firebase Rules เป็น { ".write": true } สามารถเว้นว่างไว้ได้เลย
+        // Firebase Web API Key (เว้นว่างไว้หากใช้ Rules แบบเปิดสิทธิ์)
         const DEFAULT_API_KEY = "";
 
-        // รหัสผ่านสำหรับเข้าสู่ระบบ Admin
+        // รหัสผ่านเข้าสู่ระบบ Admin
         const ADMIN_PASSCODE = "QCKNT10520";
 
-        // ลิงก์ Google Apps Script สำหรับบันทึก Google Sheet อัตโนมัติเมื่อจบเกม
+        // Google Apps Script URL สำหรับสร้างไฟล์ Google Sheet
         const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw-5N50clAOoW-CPQAW90UlKgmq0_9VFMZEoTb6HQrmeTAtSWTXLBJIwhf96g6t5uxc/exec";
 
-        // คลังชุดคำถามเริ่มต้นกรณีไม่มีในฐานข้อมูล
+        // คลังชุดคำถามเริ่มต้นสำรอง
         const DEFAULT_QUIZZES = [
             {
                 id: 'default-1',
@@ -81,6 +80,44 @@
                 ]
             }
         ];
+
+        // ฟังก์ชันตรวจเช็กและซ่อมแซมโครงสร้างชุดคำถามให้สมบูรณ์ 100% ป้องกัน .length error
+        const sanitizeQuizzes = (raw) => {
+            if (!raw) return DEFAULT_QUIZZES;
+            let list = [];
+            if (Array.isArray(raw)) {
+                list = raw;
+            } else if (typeof raw === 'object') {
+                list = Object.values(raw);
+            }
+            if (!list || list.length === 0) return DEFAULT_QUIZZES;
+
+            return list.map((q, qIdx) => {
+                const rawQuestions = Array.isArray(q?.questions) 
+                    ? q.questions 
+                    : (q?.questions && typeof q.questions === 'object' ? Object.values(q.questions) : []);
+                
+                const cleanQuestions = rawQuestions.map((item, itemIdx) => ({
+                    id: item?.id || `q-${Date.now()}-${itemIdx}`,
+                    questionText: item?.questionText || item?.question || `คำถามข้อที่ ${itemIdx + 1}`,
+                    options: Array.isArray(item?.options) && item.options.length > 0 
+                        ? item.options.map(o => String(o)) 
+                        : (item?.options && typeof item.options === 'object' 
+                            ? Object.values(item.options).map(o => String(o)) 
+                            : ['ตัวเลือก 1', 'ตัวเลือก 2', 'ตัวเลือก 3', 'ตัวเลือก 4']),
+                    correctOption: typeof item?.correctOption === 'number' ? item.correctOption : 0,
+                    timeLimit: Number(item?.timeLimit) || 20,
+                    points: Number(item?.points) || 1000
+                }));
+
+                return {
+                    id: q?.id || `quiz-${Date.now()}-${qIdx}`,
+                    title: q?.title || `ชุดคำถามที่ ${qIdx + 1}`,
+                    description: q?.description || '',
+                    questions: cleanQuestions
+                };
+            });
+        };
 
         const playSound = (type) => {
             try {
@@ -124,18 +161,61 @@
             }
         };
 
+        class ErrorBoundary extends Component {
+            constructor(props) {
+                super(props);
+                this.state = { hasError: false, error: null };
+            }
+            static getDerivedStateFromError(error) {
+                return { hasError: true, error };
+            }
+            componentDidCatch(error, errorInfo) {
+                console.error("ErrorBoundary caught an error:", error, errorInfo);
+            }
+            handleReset() {
+                try {
+                    localStorage.removeItem('company_kahoot_quizzes');
+                    localStorage.removeItem('kahoot_google_script_url');
+                } catch(e) {}
+                window.location.reload();
+            }
+            render() {
+                if (this.state.hasError) {
+                    return (
+                        <div className="min-h-screen bg-slate-900 text-white flex items-center justify-center p-4">
+                            <div className="bg-slate-800 border border-red-500/50 rounded-3xl p-8 max-w-md w-full text-center space-y-4 shadow-2xl">
+                                <div className="text-5xl">⚠️</div>
+                                <h2 className="text-xl font-bold text-red-400">ตรวจพบข้อมูลแคชค้างในเบราว์เซอร์</h2>
+                                <p className="text-slate-300 text-xs leading-relaxed">
+                                    ตรวจพบโครงสร้างชุดคำถามรูปแบบเก่าค้างอยู่ในเครื่อง ({this.state.error?.message || 'Data format error'})
+                                </p>
+                                <button 
+                                    onClick={this.handleReset}
+                                    className="w-full bg-purple-600 hover:bg-purple-500 text-white font-bold py-3 rounded-xl text-sm transition shadow-lg">
+                                    🔄 ล้างแคชและโหลดหน้าเว็บใหม่
+                                </button>
+                            </div>
+                        </div>
+                    );
+                }
+                return this.props.children;
+            }
+        }
+
         function App() {
             const [view, setView] = useState('HOME');
             
-            // ดึงข้อมูลคำถามจาก LocalStorage หรือใช้ค่าเริ่มต้น
+            // ดึงข้อมูลคำถามจาก LocalStorage พร้อมผ่านตัวกรอง Sanitizer
             const [quizzes, setQuizzes] = useState(() => {
                 try {
                     const saved = localStorage.getItem('company_kahoot_quizzes');
                     if (saved) {
                         const parsed = JSON.parse(saved);
-                        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+                        return sanitizeQuizzes(parsed);
                     }
-                } catch(e) {}
+                } catch(e) {
+                    console.warn("Storage load error:", e);
+                }
                 return DEFAULT_QUIZZES;
             });
 
@@ -151,8 +231,6 @@
                 setTimeout(() => setToastMessage(null), 3500);
             };
 
-            // Firebase Config State
-            const [fbDatabaseUrl, setFbDatabaseUrl] = useState(DEFAULT_FB_URL);
             const dbRef = useRef(null);
 
             // Admin Auth State
@@ -160,7 +238,7 @@
             const [passcodeInput, setPasscodeInput] = useState('');
             const [passcodeError, setPasscodeError] = useState('');
 
-            // Google Script URL สำหรับสร้าง Google Sheet สรุปผล
+            // Google Script URL
             const [googleScriptUrl, setGoogleScriptUrl] = useState(() => {
                 return localStorage.getItem('kahoot_google_script_url') || DEFAULT_SCRIPT_URL;
             });
@@ -181,26 +259,18 @@
                     }
                     dbRef.current = firebase.database(app);
 
-                    // 🔄 ซิงค์ชุดคำถาม Real-time จาก Firebase (Path: 'quizzes' ตรงตาม Security Rules)
+                    // 🔄 ซิงค์ชุดคำถาม Real-time จาก Firebase
                     const quizzesRef = dbRef.current.ref('quizzes');
                     quizzesRef.on('value', (snapshot) => {
                         setFirebasePermissionError(false);
                         const data = snapshot.val();
-                        if (data && Array.isArray(data) && data.length > 0) {
-                            setQuizzes(data);
-                            localStorage.setItem('company_kahoot_quizzes', JSON.stringify(data));
-                        } else if (data && typeof data === 'object') {
-                            const list = Object.values(data);
-                            if (list.length > 0) {
-                                setQuizzes(list);
-                                localStorage.setItem('company_kahoot_quizzes', JSON.stringify(list));
-                            }
-                        } else if (!data) {
-                            // ใช้ค่าเริ่มต้นในเครื่องโดยไม่พยายามเขียนทับ Cloud ขณะยังไม่ได้ยืนยันสิทธิ์
-                            setQuizzes(DEFAULT_QUIZZES);
+                        if (data) {
+                            const clean = sanitizeQuizzes(data);
+                            setQuizzes(clean);
+                            localStorage.setItem('company_kahoot_quizzes', JSON.stringify(clean));
                         }
                     }, (err) => {
-                        if (err && (err.code === 'PERMISSION_DENIED' || err.message?.includes('PERMISSION_DENIED'))) {
+                        if (err && err.code === 'PERMISSION_DENIED') {
                             setFirebasePermissionError(true);
                         }
                     });
@@ -209,19 +279,17 @@
                 }
             }, []);
 
-            // ฟังก์ชันบันทึกชุดคำถามขึ้น Firebase Cloud อัตโนมัติ (Path: 'quizzes')
             const syncQuizzesToCloud = (updatedList) => {
-                setQuizzes(updatedList);
-                localStorage.setItem('company_kahoot_quizzes', JSON.stringify(updatedList));
+                const clean = sanitizeQuizzes(updatedList);
+                setQuizzes(clean);
+                localStorage.setItem('company_kahoot_quizzes', JSON.stringify(clean));
                 if (dbRef.current) {
-                    dbRef.current.ref('quizzes').set(updatedList)
+                    dbRef.current.ref('quizzes').set(clean)
                         .then(() => setFirebasePermissionError(false))
                         .catch(err => {
-                            if (err && (err.code === 'PERMISSION_DENIED' || err.message?.includes('PERMISSION_DENIED'))) {
+                            console.error("Cloud sync error:", err);
+                            if (err && err.code === 'PERMISSION_DENIED') {
                                 setFirebasePermissionError(true);
-                                showToast('⚠️ ฐานข้อมูล Firebase ไม่อนุญาตให้เขียนข้อมูล (ติดสิทธิ์ Rules)', 'error');
-                            } else {
-                                console.error("Cloud sync error:", err);
                             }
                         });
                 }
@@ -301,7 +369,7 @@
 
             const syncRoomStateToFirebase = (newState, questionIdx, timerSecs, autoNextSecs = 5, customQuestion = null) => {
                 if (!pinCode || !dbRef.current) return;
-                const currentQ = customQuestion || activeQuiz?.questions[questionIdx];
+                const currentQ = customQuestion || activeQuiz?.questions?.[questionIdx];
                 const payload = {
                     gameState: newState,
                     currentQuestionIndex: questionIdx,
@@ -325,7 +393,7 @@
                     const payload = {
                         action: 'SAVE_RESULTS',
                         quizTitle: `${activeQuiz.title}_(${modeTitle})`,
-                        questions: activeQuiz.questions,
+                        questions: activeQuiz.questions || [],
                         players: targetPlayers.map(p => ({
                             name: p.name,
                             score: p.score || 0,
@@ -354,7 +422,6 @@
                     setView('ADMIN_QUIZ_LIST');
                     playSound('correct');
 
-                    // 🔐 ล็อกอินเข้า Firebase Auth เฉพาะเมื่อมีการตั้งค่า API Key
                     if (window.firebase && firebase.auth && DEFAULT_API_KEY && DEFAULT_API_KEY.trim()) {
                         try {
                             firebase.auth().signInAnonymously().catch(err => {
@@ -377,7 +444,6 @@
                 setIsAdminAuth(false);
                 setPasscodeInput('');
                 setView('HOME');
-                // ปลดล็อกอิน Firebase Auth (ถ้ามี)
                 if (window.firebase && firebase.auth && DEFAULT_API_KEY && DEFAULT_API_KEY.trim()) {
                     try {
                         if (firebase.auth().currentUser) {
@@ -466,36 +532,11 @@
                         }
                     }
 
-                    if (!extracted || !Array.isArray(extracted) || extracted.length === 0) {
-                        showToast('⚠️ ไม่พบรายการคำถามในไฟล์ JSON กรุณาตรวจสอบข้อมูล', 'error');
-                        return;
-                    }
-
-                    const normalized = extracted.map((quiz, qIdx) => {
-                        const rawQuestions = Array.isArray(quiz.questions) ? quiz.questions : [];
-                        const safeQuestions = rawQuestions.map((q, idx) => ({
-                            id: q.id || `q-${Date.now()}-${idx}`,
-                            questionText: q.questionText || q.question || `คำถามข้อที่ ${idx + 1}`,
-                            options: Array.isArray(q.options) && q.options.length > 0
-                                ? q.options.map(opt => String(opt))
-                                : ['ตัวเลือก 1', 'ตัวเลือก 2', 'ตัวเลือก 3', 'ตัวเลือก 4'],
-                            correctOption: typeof q.correctOption === 'number' ? q.correctOption : 0,
-                            timeLimit: Number(q.timeLimit) || 20,
-                            points: Number(q.points) || 1000
-                        }));
-
-                        return {
-                            id: quiz.id || `quiz-${Date.now()}-${qIdx}`,
-                            title: quiz.title || `ชุดคำถามนำเข้าที่ ${qIdx + 1}`,
-                            description: quiz.description || 'นำเข้าจากไฟล์ภายนอก',
-                            questions: safeQuestions
-                        };
-                    });
-
+                    const normalized = sanitizeQuizzes(extracted);
                     syncQuizzesToCloud(normalized);
                     setShowImportModal(false);
                     setImportJsonText('');
-                    const totalQuestions = normalized.reduce((acc, q) => acc + q.questions.length, 0);
+                    const totalQuestions = normalized.reduce((acc, q) => acc + (q.questions || []).length, 0);
                     showToast(`✅ นำเข้าสำเร็จ ${normalized.length} ชุดคำถาม (${totalQuestions} ข้อ) แล้ว!`, 'success');
                     playSound('correct');
                 } catch (err) {
@@ -517,7 +558,7 @@
                 };
                 const updated = {
                     ...editingQuiz,
-                    questions: [...editingQuiz.questions, newQuestion]
+                    questions: [...(editingQuiz.questions || []), newQuestion]
                 };
                 setEditingQuiz(updated);
                 const updatedAll = quizzes.map(q => q.id === updated.id ? updated : q);
@@ -526,7 +567,7 @@
 
             const handleUpdateQuestion = (qIndex, field, value) => {
                 if (!editingQuiz) return;
-                const updatedQuestions = [...editingQuiz.questions];
+                const updatedQuestions = [...(editingQuiz.questions || [])];
                 updatedQuestions[qIndex] = {
                     ...updatedQuestions[qIndex],
                     [field]: value
@@ -539,8 +580,8 @@
 
             const handleUpdateOption = (qIndex, optIndex, value) => {
                 if (!editingQuiz) return;
-                const updatedQuestions = [...editingQuiz.questions];
-                const newOptions = [...updatedQuestions[qIndex].options];
+                const updatedQuestions = [...(editingQuiz.questions || [])];
+                const newOptions = [...(updatedQuestions[qIndex]?.options || [])];
                 newOptions[optIndex] = value;
                 updatedQuestions[qIndex].options = newOptions;
 
@@ -555,7 +596,7 @@
                 setConfirmModal({
                     message: 'ยืนยันลบข้อคำถามนี้?',
                     onConfirm: () => {
-                        const updatedQuestions = editingQuiz.questions.filter((_, idx) => idx !== qIndex);
+                        const updatedQuestions = (editingQuiz.questions || []).filter((_, idx) => idx !== qIndex);
                         const updatedQuiz = { ...editingQuiz, questions: updatedQuestions };
                         setEditingQuiz(updatedQuiz);
                         const updatedAll = quizzes.map(q => q.id === updatedQuiz.id ? updatedQuiz : q);
@@ -567,8 +608,9 @@
             };
 
             const startHostLobby = (quiz, mode = 'POST_TEST') => {
+                const cleanQ = sanitizeQuizzes([quiz])[0];
                 const randomPin = Math.floor(100000 + Math.random() * 900000).toString();
-                setActiveQuiz(quiz);
+                setActiveQuiz(cleanQ);
                 setQuizMode(mode);
                 setPinCode(randomPin);
                 setPlayers([]);
@@ -580,13 +622,17 @@
                         gameState: 'LOBBY',
                         currentQuestionIndex: 0,
                         timeLeft: 20,
-                        quizTitle: quiz.title,
+                        quizTitle: cleanQ.title,
                         quizMode: mode
                     });
                 }
             };
 
             const startFirstQuestion = () => {
+                if (!activeQuiz || !activeQuiz.questions || activeQuiz.questions.length === 0) {
+                    showToast('⚠️ ชุดคำถามนี้ยังไม่มีข้อคำถาม กรุณาเพิ่มคำถามก่อนเริ่มเล่น', 'error');
+                    return;
+                }
                 setCurrentQuestionIndex(0);
                 setGameState('QUESTION');
                 setView('HOST_GAME');
@@ -640,7 +686,7 @@
                 setAutoNextTime(5);
                 
                 if (!pinCode || !dbRef.current || !activeQuiz) return;
-                const currentQ = activeQuiz.questions[currentQuestionIndex];
+                const currentQ = activeQuiz.questions?.[currentQuestionIndex];
                 if (!currentQ) return;
 
                 dbRef.current.ref('rooms/' + pinCode + '/players').once('value', (snapshot) => {
@@ -671,7 +717,7 @@
             };
 
             const goToNextQuestion = () => {
-                if (currentQuestionIndex + 1 < activeQuiz.questions.length) {
+                if (currentQuestionIndex + 1 < (activeQuiz?.questions?.length || 0)) {
                     const nextIdx = currentQuestionIndex + 1;
                     setCurrentQuestionIndex(nextIdx);
                     
@@ -714,7 +760,7 @@
 
                 if (!dbRef.current && window.firebase) {
                     try {
-                        const cleanUrl = fbDatabaseUrl.trim().replace(/\/+$/, "");
+                        const cleanUrl = DEFAULT_FB_URL.trim().replace(/\/+$/, "");
                         let app = !firebase.apps.length ? firebase.initializeApp({ databaseURL: cleanUrl }) : firebase.app();
                         dbRef.current = firebase.database(app);
                     } catch (err) {
@@ -892,7 +938,7 @@
                                             <div key={q.id} className="bg-slate-800 p-4 rounded-xl flex flex-col md:flex-row justify-between md:items-center gap-3 border border-slate-700/60">
                                                 <div>
                                                     <div className="font-medium text-purple-300 text-base">{q.title}</div>
-                                                    <div className="text-xs text-slate-400">{q.description} ({q.questions.length} ข้อ)</div>
+                                                    <div className="text-xs text-slate-400">{q.description} ({(q.questions || []).length} ข้อ)</div>
                                                 </div>
                                                 <div className="flex gap-2 shrink-0">
                                                     <button 
@@ -913,6 +959,7 @@
                             </div>
                         )}
 
+                        {}
                         {/* 2. ADMIN LOGIN VIEW */}
                         {view === 'ADMIN_LOGIN' && (
                             <div className="max-w-md mx-auto bg-slate-800 border border-slate-700 p-8 rounded-2xl shadow-2xl">
@@ -1027,7 +1074,7 @@
                                                 <h3 className="text-lg font-bold text-white">{q.title}</h3>
                                                 <p className="text-slate-400 text-sm">{q.description}</p>
                                                 <span className="inline-block bg-slate-700 text-purple-300 text-xs px-2.5 py-0.5 rounded-full mt-2">
-                                                    มีคำถามทั้งหมด {q.questions.length} ข้อ
+                                                    มีคำถามทั้งหมด {(q.questions || []).length} ข้อ
                                                 </span>
                                             </div>
                                             <div className="flex flex-wrap gap-2">
@@ -1061,6 +1108,7 @@
                             </div>
                         )}
 
+                        {}
                         {/* 4. ADMIN EDIT QUIZ & QUESTIONS MANAGER */}
                         {view === 'ADMIN_QUIZ_EDIT' && editingQuiz && (
                             <div className="max-w-4xl mx-auto space-y-6">
@@ -1108,9 +1156,9 @@
                                 </div>
 
                                 <div className="space-y-6">
-                                    <h3 className="font-bold text-slate-300">รายการคำถามทั้งหมด ({editingQuiz.questions.length} ข้อ)</h3>
+                                    <h3 className="font-bold text-slate-300">รายการคำถามทั้งหมด ({(editingQuiz.questions || []).length} ข้อ)</h3>
                                     
-                                    {editingQuiz.questions.length === 0 && (
+                                    {(editingQuiz.questions || []).length === 0 && (
                                         <div className="text-center py-8 bg-slate-800/30 rounded-xl border border-dashed border-slate-700">
                                             <p className="text-slate-500 text-sm">ยังไม่มีข้อคำถามในชุดนี้ กดปุ่มด้านล่างเพื่อเพิ่มข้อแรก</p>
                                             <button 
@@ -1121,7 +1169,7 @@
                                         </div>
                                     )}
 
-                                    {editingQuiz.questions.map((q, qIndex) => (
+                                    {(editingQuiz.questions || []).map((q, qIndex) => (
                                         <div key={q.id || qIndex} className="bg-slate-800 border border-slate-700 p-5 rounded-2xl relative space-y-4">
                                             <div className="flex justify-between items-center">
                                                 <span className="font-black text-purple-400 bg-purple-950/60 border border-purple-500/30 px-3 py-1 rounded-lg text-xs">
@@ -1145,7 +1193,7 @@
                                             </div>
 
                                             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                                {q.options.map((opt, optIndex) => (
+                                                {(q.options || []).map((opt, optIndex) => (
                                                     <div key={optIndex} className="flex items-center gap-2">
                                                         <span className={`w-6 h-6 rounded flex items-center justify-center font-bold text-xs ${
                                                             optIndex === 0 ? 'bg-red-600' :
@@ -1199,6 +1247,7 @@
                             </div>
                         )}
 
+                        {}
                         {/* 5. HOST LOBBY VIEW */}
                         {view === 'HOST_LOBBY' && (
                             <div className="text-center space-y-8">
@@ -1260,7 +1309,7 @@
                                 <div className="flex justify-between items-center">
                                     <div className="flex items-center gap-2">
                                         <span className="font-bold text-purple-300">
-                                            คำถามข้อที่ {currentQuestionIndex + 1} / {activeQuiz.questions.length}
+                                            คำถามข้อที่ {currentQuestionIndex + 1} / {(activeQuiz.questions || []).length}
                                         </span>
                                         <span className={`text-xs px-2.5 py-0.5 rounded-full border ${quizMode === 'PRE_TEST' ? 'bg-amber-950 text-amber-300 border-amber-500/40' : 'bg-purple-950 text-purple-300 border-purple-500/40'}`}>
                                             {quizMode === 'PRE_TEST' ? '📝 ก่อนอบรม (ไม่โชว์เฉลย)' : '🎯 หลังอบรม (โชว์เฉลย)'}
@@ -1273,12 +1322,12 @@
 
                                 <div className="bg-slate-800 border-2 border-slate-700 p-8 rounded-3xl text-center shadow-xl">
                                     <h2 className="text-2xl md:text-3xl font-black">
-                                        {activeQuiz.questions[currentQuestionIndex]?.questionText}
+                                        {activeQuiz.questions?.[currentQuestionIndex]?.questionText}
                                     </h2>
                                 </div>
 
                                 <div className="grid grid-cols-2 gap-4">
-                                    {activeQuiz.questions[currentQuestionIndex]?.options.map((opt, idx) => (
+                                    {(activeQuiz.questions?.[currentQuestionIndex]?.options || []).map((opt, idx) => (
                                         <div 
                                             key={idx} 
                                             className={`${optionColors[idx]} p-5 rounded-2xl font-bold text-lg flex items-center gap-3 shadow-md ${
@@ -1368,6 +1417,7 @@
                             </div>
                         )}
 
+                        {}
                         {/* 7. PLAYER JOIN VIEW */}
                         {view === 'PLAYER_JOIN' && (
                             <div className="max-w-md mx-auto bg-slate-800 p-8 rounded-3xl border border-slate-700 shadow-2xl">
@@ -1435,7 +1485,7 @@
                                         </div>
 
                                         <div className="grid grid-cols-1 gap-3">
-                                            {currentQuestionData.options.map((opt, idx) => (
+                                            {(currentQuestionData.options || []).map((opt, idx) => (
                                                 <button 
                                                     key={idx}
                                                     disabled={hasAnswered}
@@ -1496,6 +1546,7 @@
 
                     </main>
 
+                    {}
                     {/* Import JSON Modal */}
                     {showImportModal && (
                         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
@@ -1579,7 +1630,11 @@
             );
         }
 
-        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+        ReactDOM.createRoot(document.getElementById('root')).render(
+            <ErrorBoundary>
+                <App />
+            </ErrorBoundary>
+        );
     </script>
 </body>
 </html>
