@@ -813,11 +813,11 @@
                 }
             };
 
-            const optionColors = [
-                'bg-red-600 hover:bg-red-700 text-white',
-                'bg-blue-600 hover:bg-blue-700 text-white',
-                'bg-yellow-500 hover:bg-yellow-600 text-white',
-                'bg-green-600 hover:bg-green-700 text-white'
+            const choiceStyles = [
+                { border: 'border-red-500', badgeBg: 'bg-red-600', hoverBg: 'hover:bg-red-50' },
+                { border: 'border-blue-500', badgeBg: 'bg-blue-600', hoverBg: 'hover:bg-blue-50' },
+                { border: 'border-amber-500', badgeBg: 'bg-amber-500', hoverBg: 'hover:bg-amber-50' },
+                { border: 'border-emerald-500', badgeBg: 'bg-emerald-600', hoverBg: 'hover:bg-emerald-50' }
             ];
             const optionIcons = ['▲', '◆', '●', '■'];
 
@@ -1320,26 +1320,36 @@
                                     </div>
                                 </div>
 
-                                <div className="bg-slate-800 border-2 border-slate-700 p-8 rounded-3xl text-center shadow-xl">
-                                    <h2 className="text-2xl md:text-3xl font-black">
+                                {}
+                                <div className="bg-white border-2 border-slate-300 p-8 rounded-3xl text-center shadow-2xl">
+                                    <h2 className="text-2xl md:text-3xl font-black text-slate-900 leading-snug">
                                         {activeQuiz.questions?.[currentQuestionIndex]?.questionText}
                                     </h2>
                                 </div>
 
-                                <div className="grid grid-cols-2 gap-4">
-                                    {(activeQuiz.questions?.[currentQuestionIndex]?.options || []).map((opt, idx) => (
-                                        <div 
-                                            key={idx} 
-                                            className={`${optionColors[idx]} p-5 rounded-2xl font-bold text-lg flex items-center gap-3 shadow-md ${
-                                                gameState === 'RESULT' && quizMode === 'POST_TEST' && idx === activeQuiz.questions[currentQuestionIndex].correctOption ? 'ring-4 ring-white' : ''
-                                            }`}>
-                                            <span className="text-2xl">{optionIcons[idx]}</span>
-                                            <span>{opt}</span>
-                                            {gameState === 'RESULT' && quizMode === 'POST_TEST' && idx === activeQuiz.questions[currentQuestionIndex].correctOption && (
-                                                <span className="ml-auto bg-white text-green-700 text-xs px-2 py-1 rounded-md font-bold">✓ คำตอบที่ถูก</span>
-                                            )}
-                                        </div>
-                                    ))}
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    {(activeQuiz.questions?.[currentQuestionIndex]?.options || []).map((opt, idx) => {
+                                        const isCorrect = gameState === 'RESULT' && quizMode === 'POST_TEST' && idx === activeQuiz.questions[currentQuestionIndex].correctOption;
+                                        return (
+                                            <div 
+                                                key={idx} 
+                                                className={`bg-white text-slate-900 border-4 ${choiceStyles[idx]?.border || 'border-slate-300'} p-5 rounded-2xl font-bold text-lg flex items-center gap-3.5 shadow-lg transition-all ${
+                                                    isCorrect ? 'ring-4 ring-emerald-500 bg-emerald-50/70 scale-[1.01]' : ''
+                                                }`}>
+                                                <span className={`w-11 h-11 rounded-xl ${choiceStyles[idx]?.badgeBg || 'bg-slate-700'} text-white flex items-center justify-center font-black text-xl shrink-0 shadow`}>
+                                                    {optionIcons[idx]}
+                                                </span>
+                                                <span className="flex-1 text-slate-900 font-bold text-base md:text-lg leading-snug">
+                                                    {opt}
+                                                </span>
+                                                {isCorrect && (
+                                                    <span className="ml-auto bg-emerald-600 text-white text-xs md:text-sm px-3 py-1.5 rounded-xl font-bold shadow flex items-center gap-1 shrink-0 animate-bounce-short">
+                                                        ✓ คำตอบที่ถูก
+                                                    </span>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
                                 </div>
 
                                 {gameState === 'RESULT' && (
@@ -1475,37 +1485,42 @@
 
                                 {gameState === 'QUESTION' && currentQuestionData && (
                                     <div className="space-y-4">
-                                        <div className="bg-slate-800 p-5 rounded-2xl border border-slate-700 text-center shadow-lg">
-                                            <span className="text-xs text-purple-400 font-bold block mb-1">
+                                        <div className="bg-white p-5 rounded-2xl border-2 border-slate-300 text-center shadow-lg">
+                                            <span className="text-xs text-purple-600 font-bold block mb-1">
                                                 คำถามข้อที่ {currentQuestionIndex + 1}
                                             </span>
-                                            <h3 className="text-lg font-bold text-white">
+                                            <h3 className="text-lg font-bold text-slate-900 leading-snug">
                                                 {currentQuestionData.questionText}
                                             </h3>
                                         </div>
 
                                         <div className="grid grid-cols-1 gap-3">
-                                            {(currentQuestionData.options || []).map((opt, idx) => (
-                                                <button 
-                                                    key={idx}
-                                                    disabled={hasAnswered}
-                                                    onClick={() => handleAnswerSubmit(idx)}
-                                                    className={`${
-                                                        hasAnswered && selectedOption === idx 
-                                                            ? 'bg-purple-600 border-2 border-white scale-[1.02] shadow-2xl' 
-                                                            : hasAnswered 
-                                                                ? 'bg-slate-800/50 opacity-40 cursor-not-allowed' 
-                                                                : optionColors[idx]
-                                                    } p-4 rounded-2xl font-bold text-base flex items-center gap-3 transition transform active:scale-95 shadow-md text-left`}>
-                                                    <span className="text-xl shrink-0">{optionIcons[idx]}</span>
-                                                    <span className="flex-1">{opt}</span>
-                                                    {hasAnswered && selectedOption === idx && (
-                                                        <span className="text-xs bg-white text-purple-900 font-black px-2.5 py-1 rounded-full shrink-0">
-                                                            ✓ ตัวเลือกของคุณ
+                                            {(currentQuestionData.options || []).map((opt, idx) => {
+                                                const isSelected = hasAnswered && selectedOption === idx;
+                                                return (
+                                                    <button 
+                                                        key={idx}
+                                                        disabled={hasAnswered}
+                                                        onClick={() => handleAnswerSubmit(idx)}
+                                                        className={`bg-white text-slate-900 border-4 ${choiceStyles[idx]?.border || 'border-slate-300'} ${
+                                                            isSelected 
+                                                                ? 'ring-4 ring-purple-600 bg-purple-50 scale-[1.02] shadow-2xl' 
+                                                                : hasAnswered 
+                                                                    ? 'opacity-40 cursor-not-allowed' 
+                                                                    : choiceStyles[idx]?.hoverBg + ' active:scale-95'
+                                                        } p-4 rounded-2xl font-bold text-base flex items-center gap-3 transition transform shadow-md text-left`}>
+                                                        <span className={`w-9 h-9 rounded-xl ${choiceStyles[idx]?.badgeBg || 'bg-slate-700'} text-white flex items-center justify-center font-black text-lg shrink-0 shadow`}>
+                                                            {optionIcons[idx]}
                                                         </span>
-                                                    )}
-                                                </button>
-                                            ))}
+                                                        <span className="flex-1 text-slate-900 font-bold leading-snug">{opt}</span>
+                                                        {isSelected && (
+                                                            <span className="text-xs bg-purple-600 text-white font-bold px-2.5 py-1 rounded-full shrink-0 shadow">
+                                                                ✓ ตัวเลือกของคุณ
+                                                            </span>
+                                                        )}
+                                                    </button>
+                                                );
+                                            })}
                                         </div>
 
                                         {hasAnswered && (
