@@ -1418,10 +1418,10 @@
                         {}
                         {/* 5. HOST LOBBY VIEW */}
                         {view === 'HOST_LOBBY' && (
-                            <div className="text-center space-y-8">
+                            <div className="text-center space-y-8 max-w-3xl mx-auto">
                                 <div className="bg-slate-800 border-2 border-purple-500/40 p-6 rounded-3xl inline-block max-w-xl w-full shadow-2xl relative">
                                     <p className="text-slate-400 text-sm font-semibold uppercase tracking-wider mb-1">สแกนรหัส PIN เพื่อเข้าร่วม</p>
-                                    <div className="text-6xl font-black tracking-widest text-yellow-400 my-2 my-auto">{pinCode}</div>
+                                    <div className="text-6xl font-black tracking-widest text-yellow-400 my-2">{pinCode}</div>
                                     <p className="text-xs text-slate-400">เข้าผ่านมือถือแล้วเลือก "เข้าร่วมเล่น" ใส่ PIN ด้านบนนี้</p>
                                     
                                     <div className="mt-4 pt-3 border-t border-slate-700 flex flex-col items-center justify-center gap-2">
@@ -1441,26 +1441,80 @@
                                             </div>
                                         </div>
 
-                                        <span className="text-[11px] text-slate-300">
-                                            👥 ผู้เข้าร่วมสะสมขณะนี้: <strong className="text-green-400 text-sm">{players.length}</strong> คน
+                                        <span className="text-xs text-slate-300">
+                                            👥 ผู้เข้าร่วมขณะนี้: <strong className="text-green-400 text-base">{players.length}</strong> คน
                                         </span>
                                     </div>
                                 </div>
 
-                                {players.length > 0 && (
-                                    <div className="bg-slate-800/60 p-4 rounded-2xl max-w-2xl mx-auto border border-slate-700">
-                                        <h4 className="text-xs font-bold text-slate-400 mb-2">รายชื่อพนักงานที่เข้ามาแล้ว:</h4>
+                                {players.length > 0 ? (
+                                    <div className="bg-slate-800/60 p-5 rounded-2xl border border-slate-700 space-y-2">
+                                        <h4 className="text-xs font-bold text-slate-400">รายชื่อพนักงานที่เข้ามาแล้ว ({players.length} คน):</h4>
                                         <div className="flex flex-wrap justify-center gap-2">
                                             {players.map(p => (
-                                                <span key={p.id} className="bg-purple-900/60 border border-purple-500/40 text-purple-200 text-xs px-3 py-1 rounded-full font-semibold">
+                                                <span key={p.id} className="bg-purple-900/60 border border-purple-500/40 text-purple-200 text-sm px-3.5 py-1.5 rounded-full font-semibold shadow">
                                                     👤 {p.name}
                                                 </span>
                                             ))}
                                         </div>
                                     </div>
+                                ) : (
+                                    <div className="bg-slate-800/40 p-5 rounded-2xl border border-dashed border-slate-700 text-slate-400 text-sm">
+                                        ⏳ กำลังรอพนักงานเข้าร่วมห้องด้วย PIN <strong className="text-yellow-400">{pinCode}</strong>...
+                                    </div>
                                 )}
 
-                                {/* 6. HOST GAME VIEW */}
+                                {/* ปุ่มควบคุมสำหรับวิทยากรในหน้า Lobby */}
+                                <div className="flex flex-wrap justify-center gap-4 pt-2">
+                                    <button 
+                                        onClick={() => setView('HOME')}
+                                        className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-6 py-3.5 rounded-2xl border border-slate-700 text-sm transition">
+                                        ← ยกเลิก / กลับหน้าหลัก
+                                    </button>
+                                    <button 
+                                        onClick={startFirstQuestion}
+                                        className="bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-400 hover:to-emerald-500 text-white font-black text-lg px-10 py-3.5 rounded-2xl shadow-xl transition transform hover:scale-105 active:scale-95 flex items-center gap-2">
+                                        <span>🚀 เริ่มเล่นเกมเลย!</span>
+                                        <span className="bg-white/20 text-xs px-2.5 py-1 rounded-full font-bold">{players.length} คน</span>
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* 6. HOST GAME VIEW */}
+                        {view === 'HOST_GAME' && activeQuiz && (
+                            <div className="space-y-6">
+                                {/* แถบสถานะด้านบนของวิทยากร */}
+                                <div className="bg-slate-800/80 p-4 rounded-2xl border border-slate-700 flex flex-wrap justify-between items-center gap-3">
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-xs text-purple-300 font-bold bg-purple-950/80 px-3 py-1.5 rounded-xl border border-purple-500/40">
+                                            ข้อที่ {currentQuestionIndex + 1} / {(activeQuiz.questions || []).length}
+                                        </span>
+                                        <span className="text-xs bg-slate-900 text-slate-300 px-3 py-1.5 rounded-xl border border-slate-700 font-semibold">
+                                            {quizMode === 'PRE_TEST' ? '📝 โหมดก่อนอบรม' : '🎯 โหมดหลังอบรม'}
+                                        </span>
+                                    </div>
+
+                                    <div className="flex items-center gap-3">
+                                        <span className="text-xs text-slate-400">
+                                            ตอบแล้ว: <strong className="text-emerald-400">{players.filter(p => p.lastAnswer !== null && p.lastAnswer !== undefined).length}</strong> / {players.length} คน
+                                        </span>
+                                        <div className={`px-4 py-1.5 rounded-xl text-lg font-black flex items-center gap-1.5 border shadow ${
+                                            timeLeft <= 5 ? 'bg-red-950 border-red-500 text-red-400 animate-pulse' : 'bg-purple-950 border-purple-500/40 text-yellow-400'
+                                        }`}>
+                                            ⏱️ {timeLeft} วินาที
+                                        </div>
+                                        {gameState === 'QUESTION' && (
+                                            <button 
+                                                onClick={evaluateCurrentQuestion}
+                                                className="bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold px-3 py-2 rounded-xl transition shadow">
+                                                เฉลยทันที ⏭️
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+
+                                {/* กรอบโจทย์คำถาม */}
                                 <div className="bg-white border-2 border-slate-300 p-8 rounded-3xl text-center shadow-2xl">
                                     <h2 className="text-2xl md:text-3xl font-black text-slate-900 leading-snug">
                                         {activeQuiz.questions?.[currentQuestionIndex]?.questionText}
@@ -1495,6 +1549,7 @@
                                     )}
                                 </div>
 
+                                {/* ตัวเลือกคำตอบ */}
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                     {(activeQuiz.questions?.[currentQuestionIndex]?.options || []).map((opt, idx) => {
                                         const isCorrect = gameState === 'RESULT' && quizMode === 'POST_TEST' && idx === activeQuiz.questions[currentQuestionIndex].correctOption;
@@ -1522,7 +1577,7 @@
 
                                 {gameState === 'RESULT' && (
                                     <div className="bg-slate-800 p-6 rounded-3xl border border-slate-700 text-center space-y-5 shadow-2xl">
-                                        <div className="flex justify-between items-center bg-purple-950/80 p-4 rounded-2xl border border-purple-500/30">
+                                        <div className="flex flex-wrap justify-between items-center bg-purple-950/80 p-4 rounded-2xl border border-purple-500/30 gap-3">
                                             <div className="text-left">
                                                 <h3 className="text-xl font-black text-yellow-400">📊 ตารางสรุปคะแนนสะสม (จากสูงไปต่ำ)</h3>
                                                 <p className="text-xs text-slate-400 mt-0.5">
@@ -1595,7 +1650,6 @@
                             </div>
                         )}
 
-                        {}
                         {/* 7. PLAYER JOIN VIEW */}
                         {view === 'PLAYER_JOIN' && (
                             <div className="max-w-md mx-auto bg-slate-800 p-8 rounded-3xl border border-slate-700 shadow-2xl">
