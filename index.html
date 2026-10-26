@@ -56,6 +56,7 @@
                     {
                         id: 'q1',
                         questionText: 'วิสัยทัศน์และ Vision ของบริษัทเราเน้นเรื่องใดเป็นสำคัญที่สุด?',
+                        images: [],
                         options: ['กำไรสูงสุด', 'นวัตกรรมและความยั่งยืน', 'ขยายสาขาต่างประเทศ', 'ลดต้นทุนผลิต'],
                         correctOption: 1,
                         timeLimit: 20,
@@ -64,6 +65,7 @@
                     {
                         id: 'q2',
                         questionText: 'เบอร์โทรศัพท์ฉุกเฉินสำหรับแจ้งเหตุภายในออฟฟิศคือเบอร์อะไร?',
+                        images: [],
                         options: ['กด 0', 'กด 100', 'กด 999', 'กด 1193'],
                         correctOption: 2,
                         timeLimit: 15,
@@ -72,6 +74,7 @@
                     {
                         id: 'q3',
                         questionText: 'เมื่อเกิดสัญญาณเตือนภัยไหม้ สิ่งแรกที่ต้องทำคืออะไร?',
+                        images: [],
                         options: ['เก็บของส่วนตัวใส่กระเป๋า', 'เดินลงทางบันไดหนีไฟทันที', 'กดลิฟต์ลงชั้น 1', 'นั่งรอฟังประกาศต่อ'],
                         correctOption: 1,
                         timeLimit: 15,
@@ -80,6 +83,17 @@
                 ]
             }
         ];
+
+        // ฟังก์ชันแปลงลิงก์รูปภาพ (รองรับทั้ง URL ทั่วไป และลิงก์ Google Drive view/share ให้แสดงผลใน <img> ได้ทันที)
+        const formatImageUrl = (url) => {
+            if (!url || typeof url !== 'string') return '';
+            const trimmed = url.trim();
+            const gDriveMatch = trimmed.match(/\/file\/d\/([a-zA-Z0-9_-]+)/) || trimmed.match(/id=([a-zA-Z0-9_-]+)/);
+            if (gDriveMatch && (trimmed.includes('drive.google.com') || trimmed.includes('docs.google.com'))) {
+                return `https://lh3.googleusercontent.com/d/${gDriveMatch[1]}`;
+            }
+            return trimmed;
+        };
 
         // ฟังก์ชันตรวจเช็กและซ่อมแซมโครงสร้างชุดคำถามให้สมบูรณ์ 100% ป้องกัน .length error
         const sanitizeQuizzes = (raw) => {
@@ -97,18 +111,30 @@
                     ? q.questions 
                     : (q?.questions && typeof q.questions === 'object' ? Object.values(q.questions) : []);
                 
-                const cleanQuestions = rawQuestions.map((item, itemIdx) => ({
-                    id: item?.id || `q-${Date.now()}-${itemIdx}`,
-                    questionText: item?.questionText || item?.question || `คำถามข้อที่ ${itemIdx + 1}`,
-                    options: Array.isArray(item?.options) && item.options.length > 0 
-                        ? item.options.map(o => String(o)) 
-                        : (item?.options && typeof item.options === 'object' 
-                            ? Object.values(item.options).map(o => String(o)) 
-                            : ['ตัวเลือก 1', 'ตัวเลือก 2', 'ตัวเลือก 3', 'ตัวเลือก 4']),
-                    correctOption: typeof item?.correctOption === 'number' ? item.correctOption : 0,
-                    timeLimit: Number(item?.timeLimit) || 20,
-                    points: Number(item?.points) || 1000
-                }));
+                const cleanQuestions = rawQuestions.map((item, itemIdx) => {
+                    let cleanImages = [];
+                    if (Array.isArray(item?.images)) {
+                        cleanImages = item.images.filter(x => typeof x === 'string' && x.trim() !== '').slice(0, 3);
+                    } else if (item?.image && typeof item.image === 'string' && item.image.trim()) {
+                        cleanImages = [item.image.trim()];
+                    } else if (item?.imageUrl && typeof item.imageUrl === 'string' && item.imageUrl.trim()) {
+                        cleanImages = [item.imageUrl.trim()];
+                    }
+
+                    return {
+                        id: item?.id || `q-${Date.now()}-${itemIdx}`,
+                        questionText: item?.questionText || item?.question || `คำถามข้อที่ ${itemIdx + 1}`,
+                        images: cleanImages,
+                        options: Array.isArray(item?.options) && item.options.length > 0 
+                            ? item.options.map(o => String(o)) 
+                            : (item?.options && typeof item.options === 'object' 
+                                ? Object.values(item.options).map(o => String(o)) 
+                                : ['ตัวเลือก 1', 'ตัวเลือก 2', 'ตัวเลือก 3', 'ตัวเลือก 4']),
+                        correctOption: typeof item?.correctOption === 'number' ? item.correctOption : 0,
+                        timeLimit: Number(item?.timeLimit) || 20,
+                        points: Number(item?.points) || 1000
+                    };
+                });
 
                 return {
                     id: q?.id || `quiz-${Date.now()}-${qIdx}`,
@@ -225,6 +251,7 @@
             const [showImportModal, setShowImportModal] = useState(false);
             const [importJsonText, setImportJsonText] = useState('');
             const [firebasePermissionError, setFirebasePermissionError] = useState(false);
+            const [zoomImage, setZoomImage] = useState(null);
 
             const showToast = (msg, type = 'info') => {
                 setToastMessage({ msg, type });
@@ -377,6 +404,7 @@
                     autoNextTime: autoNextSecs,
                     currentQuestion: currentQ ? {
                         questionText: currentQ.questionText,
+                        images: currentQ.images || [],
                         options: currentQ.options
                     } : null
                 };
@@ -551,6 +579,7 @@
                 const newQuestion = {
                     id: 'q-' + Date.now(),
                     questionText: 'คำถามข้อใหม่...',
+                    images: [],
                     options: ['ตัวเลือก A', 'ตัวเลือก B', 'ตัวเลือก C', 'ตัวเลือก D'],
                     correctOption: 0,
                     timeLimit: 20,
@@ -562,6 +591,53 @@
                 };
                 setEditingQuiz(updated);
                 const updatedAll = quizzes.map(q => q.id === updated.id ? updated : q);
+                syncQuizzesToCloud(updatedAll);
+            };
+
+            const handleAddQuestionImage = (qIndex) => {
+                if (!editingQuiz) return;
+                const updatedQuestions = [...(editingQuiz.questions || [])];
+                const currentImages = updatedQuestions[qIndex]?.images || [];
+                if (currentImages.length >= 3) {
+                    showToast('⚠️ ใส่รูปภาพได้สูงสุด 3 รูปต่อข้อ', 'error');
+                    return;
+                }
+                updatedQuestions[qIndex] = {
+                    ...updatedQuestions[qIndex],
+                    images: [...currentImages, '']
+                };
+                const updatedQuiz = { ...editingQuiz, questions: updatedQuestions };
+                setEditingQuiz(updatedQuiz);
+                const updatedAll = quizzes.map(q => q.id === updatedQuiz.id ? updatedQuiz : q);
+                syncQuizzesToCloud(updatedAll);
+            };
+
+            const handleUpdateQuestionImage = (qIndex, imgIdx, value) => {
+                if (!editingQuiz) return;
+                const updatedQuestions = [...(editingQuiz.questions || [])];
+                const newImages = [...(updatedQuestions[qIndex]?.images || [])];
+                newImages[imgIdx] = value;
+                updatedQuestions[qIndex] = {
+                    ...updatedQuestions[qIndex],
+                    images: newImages
+                };
+                const updatedQuiz = { ...editingQuiz, questions: updatedQuestions };
+                setEditingQuiz(updatedQuiz);
+                const updatedAll = quizzes.map(q => q.id === updatedQuiz.id ? updatedQuiz : q);
+                syncQuizzesToCloud(updatedAll);
+            };
+
+            const handleDeleteQuestionImage = (qIndex, imgIdx) => {
+                if (!editingQuiz) return;
+                const updatedQuestions = [...(editingQuiz.questions || [])];
+                const newImages = (updatedQuestions[qIndex]?.images || []).filter((_, idx) => idx !== imgIdx);
+                updatedQuestions[qIndex] = {
+                    ...updatedQuestions[qIndex],
+                    images: newImages
+                };
+                const updatedQuiz = { ...editingQuiz, questions: updatedQuestions };
+                setEditingQuiz(updatedQuiz);
+                const updatedAll = quizzes.map(q => q.id === updatedQuiz.id ? updatedQuiz : q);
                 syncQuizzesToCloud(updatedAll);
             };
 
@@ -853,6 +929,31 @@
                                         ยืนยัน
                                     </button>
                                 </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Image Zoom / Lightbox Modal */}
+                    {zoomImage && (
+                        <div 
+                            className="fixed inset-0 bg-black/85 backdrop-blur-sm z-50 flex flex-col items-center justify-center p-4"
+                            onClick={() => setZoomImage(null)}>
+                            <div className="relative max-w-4xl max-h-[90vh] bg-slate-900 border border-slate-700 p-2 rounded-2xl shadow-2xl" onClick={e => e.stopPropagation()}>
+                                <button 
+                                    onClick={() => setZoomImage(null)}
+                                    className="absolute -top-3 -right-3 bg-red-600 hover:bg-red-500 text-white rounded-full w-8 h-8 flex items-center justify-center font-bold text-sm shadow-lg">
+                                    ✕
+                                </button>
+                                <img 
+                                    src={zoomImage} 
+                                    alt="ภาพขยาย" 
+                                    className="max-w-full max-h-[80vh] object-contain rounded-xl"
+                                    onError={(e) => {
+                                        e.target.onerror = null;
+                                        e.target.src = 'https://placehold.co/600x400/1e293b/94a3b8?text=Image+Load+Error';
+                                    }}
+                                />
+                                <p className="text-center text-xs text-slate-400 mt-2">คลิกด้านนอกหรือปุ่ม ✕ เพื่อปิด</p>
                             </div>
                         </div>
                     )}
@@ -1192,6 +1293,73 @@
                                                 />
                                             </div>
 
+                                            {/* ส่วนเพิ่มรูปภาพประกอบ (สูงสุด 3 รูป) */}
+                                            <div className="bg-slate-900/60 p-3.5 rounded-xl border border-slate-700/70 space-y-3">
+                                                <div className="flex justify-between items-center">
+                                                    <span className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                                                        🖼️ รูปภาพประกอบ (ถ้ามี - สูงสุด 3 รูป)
+                                                        <span className="text-purple-400 font-bold bg-purple-950/80 px-2 py-0.5 rounded-full text-[11px] border border-purple-500/30">
+                                                            {(q.images || []).length} / 3 รูป
+                                                        </span>
+                                                    </span>
+                                                    {(q.images || []).length < 3 && (
+                                                        <button 
+                                                            type="button"
+                                                            onClick={() => handleAddQuestionImage(qIndex)}
+                                                            className="text-xs bg-purple-600 hover:bg-purple-500 text-white px-3 py-1.5 rounded-lg font-bold flex items-center gap-1 shadow transition">
+                                                            ➕ เพิ่มรูปภาพ
+                                                        </button>
+                                                    )}
+                                                </div>
+
+                                                {(q.images && q.images.length > 0) ? (
+                                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                                        {q.images.map((imgUrl, imgIdx) => (
+                                                            <div key={imgIdx} className="bg-slate-950 border border-slate-800 rounded-xl p-2.5 space-y-2 relative">
+                                                                <div className="relative aspect-video bg-slate-900 rounded-lg overflow-hidden flex items-center justify-center border border-slate-800/80">
+                                                                    {imgUrl && imgUrl.trim() ? (
+                                                                        <img 
+                                                                            src={formatImageUrl(imgUrl)} 
+                                                                            alt={`รูปที่ ${imgIdx + 1}`}
+                                                                            className="w-full h-full object-contain cursor-pointer"
+                                                                            onClick={() => setZoomImage(formatImageUrl(imgUrl))}
+                                                                            onError={(e) => {
+                                                                                e.target.onerror = null;
+                                                                                e.target.src = 'https://placehold.co/600x400/1e293b/94a3b8?text=Image+Load+Error';
+                                                                            }}
+                                                                        />
+                                                                    ) : (
+                                                                        <div className="text-xs text-slate-500 flex flex-col items-center">
+                                                                            <span className="text-xl mb-0.5">🖼️</span>
+                                                                            <span className="text-[11px]">รอใส่ URL รูป</span>
+                                                                        </div>
+                                                                    )}
+                                                                    <button 
+                                                                        type="button"
+                                                                        onClick={() => handleDeleteQuestionImage(qIndex, imgIdx)}
+                                                                        className="absolute top-1.5 right-1.5 bg-red-600/90 hover:bg-red-600 text-white w-6 h-6 rounded-lg text-xs font-bold flex items-center justify-center shadow">
+                                                                        ✕
+                                                                    </button>
+                                                                </div>
+                                                                <div>
+                                                                    <input 
+                                                                        type="text"
+                                                                        value={imgUrl}
+                                                                        onChange={(e) => handleUpdateQuestionImage(qIndex, imgIdx, e.target.value)}
+                                                                        placeholder="วาง URL รูปภาพ (หรือแชร์จาก Google Drive)..."
+                                                                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-purple-500"
+                                                                    />
+                                                                </div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                ) : (
+                                                    <p className="text-[11px] text-slate-500 italic">
+                                                        ข้อนี้ยังไม่มีรูปภาพประกอบ (สามารถกดปุ่ม "➕ เพิ่มรูปภาพ" เพื่อใส่ลิงก์รูปภาพจากเน็ตหรือ Google Drive ได้)
+                                                    </p>
+                                                )}
+                                            </div>
+
                                             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                                 {(q.options || []).map((opt, optIndex) => (
                                                     <div key={optIndex} className="flex items-center gap-2">
@@ -1292,39 +1460,39 @@
                                     </div>
                                 )}
 
-                                <button 
-                                    onClick={startFirstQuestion}
-                                    disabled={players.length === 0}
-                                    className={`px-8 py-4 rounded-2xl font-black text-xl shadow-lg transition ${
-                                        players.length > 0 ? 'bg-green-500 hover:bg-green-600 text-slate-900 cursor-pointer' : 'bg-slate-700 text-slate-500 cursor-not-allowed'
-                                    }`}>
-                                    🚀 เริ่มเล่นเกมเลย!
-                                </button>
-                            </div>
-                        )}
-
-                        {/* 6. HOST GAME VIEW */}
-                        {view === 'HOST_GAME' && activeQuiz && (
-                            <div className="space-y-6">
-                                <div className="flex justify-between items-center">
-                                    <div className="flex items-center gap-2">
-                                        <span className="font-bold text-purple-300">
-                                            คำถามข้อที่ {currentQuestionIndex + 1} / {(activeQuiz.questions || []).length}
-                                        </span>
-                                        <span className={`text-xs px-2.5 py-0.5 rounded-full border ${quizMode === 'PRE_TEST' ? 'bg-amber-950 text-amber-300 border-amber-500/40' : 'bg-purple-950 text-purple-300 border-purple-500/40'}`}>
-                                            {quizMode === 'PRE_TEST' ? '📝 ก่อนอบรม (ไม่โชว์เฉลย)' : '🎯 หลังอบรม (โชว์เฉลย)'}
-                                        </span>
-                                    </div>
-                                    <div className="w-16 h-16 bg-purple-600 rounded-full flex items-center justify-center font-black text-2xl border-4 border-purple-400">
-                                        {timeLeft}
-                                    </div>
-                                </div>
-
-                                {}
+                                {/* 6. HOST GAME VIEW */}
                                 <div className="bg-white border-2 border-slate-300 p-8 rounded-3xl text-center shadow-2xl">
                                     <h2 className="text-2xl md:text-3xl font-black text-slate-900 leading-snug">
                                         {activeQuiz.questions?.[currentQuestionIndex]?.questionText}
                                     </h2>
+
+                                    {/* รูปภาพประกอบสำหรับวิทยากร (Host) */}
+                                    {activeQuiz.questions?.[currentQuestionIndex]?.images && activeQuiz.questions[currentQuestionIndex].images.length > 0 && (
+                                        <div className={`mt-5 grid gap-3 max-w-4xl mx-auto justify-center items-center ${
+                                            activeQuiz.questions[currentQuestionIndex].images.length === 1 
+                                                ? 'grid-cols-1 max-w-md' 
+                                                : activeQuiz.questions[currentQuestionIndex].images.length === 2 
+                                                    ? 'grid-cols-2 max-w-2xl' 
+                                                    : 'grid-cols-1 md:grid-cols-3'
+                                        }`}>
+                                            {activeQuiz.questions[currentQuestionIndex].images.map((imgUrl, imgIdx) => (
+                                                <div 
+                                                    key={imgIdx} 
+                                                    onClick={() => setZoomImage(formatImageUrl(imgUrl))}
+                                                    className="rounded-2xl overflow-hidden bg-slate-50 border border-slate-200 flex items-center justify-center aspect-video max-h-56 shadow-sm hover:shadow-md cursor-pointer transition transform hover:scale-[1.02]">
+                                                    <img 
+                                                        src={formatImageUrl(imgUrl)} 
+                                                        alt={`ภาพประกอบ ${imgIdx + 1}`}
+                                                        className="w-full h-full object-contain"
+                                                        onError={(e) => {
+                                                            e.target.onerror = null;
+                                                            e.target.src = 'https://placehold.co/600x400/1e293b/94a3b8?text=Image+Load+Error';
+                                                        }}
+                                                    />
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
                                 </div>
 
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1492,6 +1660,30 @@
                                             <h3 className="text-lg font-bold text-slate-900 leading-snug">
                                                 {currentQuestionData.questionText}
                                             </h3>
+
+                                            {/* รูปภาพประกอบฝั่งผู้เล่น (Player) */}
+                                            {currentQuestionData.images && currentQuestionData.images.length > 0 && (
+                                                <div className={`mt-3 grid gap-2 ${
+                                                    currentQuestionData.images.length === 1 ? 'grid-cols-1 max-w-xs mx-auto' : 'grid-cols-2 sm:grid-cols-3'
+                                                }`}>
+                                                    {currentQuestionData.images.map((imgUrl, imgIdx) => (
+                                                        <div 
+                                                            key={imgIdx} 
+                                                            onClick={() => setZoomImage(formatImageUrl(imgUrl))}
+                                                            className="rounded-xl overflow-hidden bg-slate-50 border border-slate-200 flex items-center justify-center aspect-video max-h-36 shadow-sm cursor-pointer">
+                                                            <img 
+                                                                src={formatImageUrl(imgUrl)} 
+                                                                alt={`รูป ${imgIdx + 1}`}
+                                                                className="w-full h-full object-contain"
+                                                                onError={(e) => {
+                                                                    e.target.onerror = null;
+                                                                    e.target.src = 'https://placehold.co/600x400/1e293b/94a3b8?text=Image+Load+Error';
+                                                                }}
+                                                            />
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
                                         </div>
 
                                         <div className="grid grid-cols-1 gap-3">
