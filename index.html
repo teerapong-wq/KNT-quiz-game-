@@ -38,8 +38,8 @@
         // 📌 ค่ากำหนดระบบหลัก (ตั้งค่าครั้งเดียวใช้ได้ทุกเครื่อง)
         // ==========================================
         const DEFAULT_FB_URL = "https://knt-quiz-default-rtdb.asia-southeast1.firebasedatabase.app";
+        // ⚠️ นำ Web API Key จาก Firebase Console -> Project Settings มาวางตรงนี้ (ไม่ใช่รหัสผ่าน เป็นคีย์สาธารณะสำหรับเชื่อมต่อ Auth)
         const DEFAULT_API_KEY = "";
-        const ADMIN_PASSCODE = "QCKNT10520";
         const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw-5N50clAOoW-CPQAW90UlKgmq0_9VFMZEoTb6HQrmeTAtSWTXLBJIwhf96g6t5uxc/exec";
 
         // คลังชุดคำถามเริ่มต้นสำรอง (กรณีฐานข้อมูลยังว่าง)
@@ -252,17 +252,20 @@
             const dbRef = useRef(null);
             const quizSectionRef = useRef(null);
 
-            // สถานะสิทธิ์การเข้าถึงของ Admin
+            // สถานะสิทธิ์การเข้าถึงของ Admin (ผ่าน Firebase Authentication)
             const [isAdminAuth, setIsAdminAuth] = useState(false);
-            const [passcodeInput, setPasscodeInput] = useState('');
-            const [passcodeError, setPasscodeError] = useState('');
+            const [adminUserEmail, setAdminUserEmail] = useState('');
+            const [adminEmail, setAdminEmail] = useState('');
+            const [adminPassword, setAdminPassword] = useState('');
+            const [loginError, setLoginError] = useState('');
+            const [isLoggingIn, setIsLoggingIn] = useState(false);
 
             // ลิงก์ Google Apps Script สำหรับสร้างไฟล์สรุปผลเป็น Google Sheet
             const [googleScriptUrl] = useState(() => {
                 return localStorage.getItem('kahoot_google_script_url') || DEFAULT_SCRIPT_URL;
             });
 
-            // 1. เชื่อมต่อ Firebase Realtime Database อัตโนมัติเมื่อเปิดเว็บ
+            // 1. เชื่อมต่อ Firebase Realtime Database และระบบยืนยันตัวตนอัตโนมัติเมื่อเปิดเว็บ
             useEffect(() => {
                 if (!window.firebase) return;
                 try {
@@ -279,6 +282,20 @@
                     }
                     dbRef.current = firebase.database(app);
 
+                    // ติดตามสถานะการเข้าสู่ระบบของ Admin อัตโนมัติ (รีเฟรชหน้าเว็บก็ไม่หลุด)
+                    let unsubscribeAuth = () => {};
+                    if (DEFAULT_API_KEY && DEFAULT_API_KEY.trim()) {
+                        unsubscribeAuth = firebase.auth().onAuthStateChanged((user) => {
+                            if (user && user.email) {
+                                setIsAdminAuth(true);
+                                setAdminUserEmail(user.email);
+                            } else {
+                                setIsAdminAuth(false);
+                                setAdminUserEmail('');
+                            }
+                        });
+                    }
+
                     // ซิงค์คลังคำถามอัตโนมัติจาก Firebase
                     const quizzesRef = dbRef.current.ref('quizzes');
                     quizzesRef.on('value', (snapshot) => {
@@ -294,6 +311,11 @@
                             setFirebasePermissionError(true);
                         }
                     });
+
+                    return () => {
+                        unsubscribeAuth();
+                        quizzesRef.off('value');
+                    };
                 } catch (err) {
                     console.error("Firebase init error:", err);
                 }
@@ -398,66 +420,79 @@
                     currentQuestionIndex: questionIdx,
                     timeLeft: timerSecs,
                     autoNextTime: autoNextSecs,
-                    currentQuestion: currentQ ? {
+                    quizMode: quizMode
+                };
+                if (currentQ) {
+                    payload.currentQuestion = {
                         questionText: currentQ.questionText,
                         images: currentQ.images || [],
-                        options: currentQ.options
-                    } : null
-                };
+                        options: currentQ.options || [],
+                        timeLimit: currentQ.timeLimit || 20
+                    };
+                }
                 dbRef.current.ref('rooms/' + pinCode).update(payload);
             };
 
-            // ส่งข้อมูลสรุปผลคะแนนไปสร้าง Google Sheet บน Google Drive เมื่อจบเกม
-            const handleSaveResultsToGoogleDrive = async (overridePlayers = null) => {
-                if (!googleScriptUrl || !activeQuiz) return;
-                setIsSavingResults(true);
-                setSaveResultsMessage('⏳ กำลังสร้างไฟล์ Google Sheet สรุปผลคะแนนลง Google Drive...');
-                try {
-                    const targetPlayers = overridePlayers || players;
-                    const modeTitle = quizMode === 'PRE_TEST' ? 'ก่อนอบรม' : 'หลังอบรม';
-                    const payload = {
-                        action: 'SAVE_RESULTS',
-                        quizTitle: `${activeQuiz.title}_(${modeTitle})`,
-                        questions: activeQuiz.questions || [],
-                        players: targetPlayers.map(p => ({
-                            name: p.name,
-                            score: p.score || 0,
-                            playerAnswers: p.answersHistory || {}
-                        }))
-                    };
-                    await fetch(googleScriptUrl, {
-                        method: 'POST',
-                        mode: 'no-cors',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
-                    setSaveResultsMessage('✅ บันทึกสรุปผลเป็น Google Sheet ลง Google Drive เรียบร้อยแล้ว!');
-                } catch (err) {
-                    setSaveResultsMessage('❌ ไม่สามารถบันทึกสรุปผลลง Google Drive ได้');
-                } finally {
-                    setIsSavingResults(false);
-                }
-            };
-
-            // ล็อกอิน Admin
-            const handleAdminLogin = (e) => {
+            // ล็อกอิน Admin ผ่าน Firebase Authentication (Email & Password)
+            const handleAdminLogin = async (e) => {
                 e.preventDefault();
-                if (passcodeInput.trim() === ADMIN_PASSCODE.trim()) {
+                if (!DEFAULT_API_KEY || !DEFAULT_API_KEY.trim()) {
+                    setLoginError('ยังไม่ได้ใส่ค่า DEFAULT_API_KEY ในไฟล์ index.html (กรุณานำ Web API Key จาก Firebase มาใส่ก่อน)');
+                    playSound('wrong');
+                    return;
+                }
+                if (!adminEmail.trim() || !adminPassword) {
+                    setLoginError('กรุณากรอกอีเมลและรหัสผ่านให้ครบถ้วน');
+                    playSound('wrong');
+                    return;
+                }
+
+                setIsLoggingIn(true);
+                setLoginError('');
+                try {
+                    const userCredential = await firebase.auth().signInWithEmailAndPassword(adminEmail.trim(), adminPassword);
+                    const loggedInEmail = userCredential.user?.email || adminEmail.trim();
                     setIsAdminAuth(true);
-                    setPasscodeError('');
+                    setAdminUserEmail(loggedInEmail);
+                    setAdminPassword('');
                     setView('HOME');
                     playSound('correct');
-                    showToast('✅ เข้าสู่ระบบ Admin สำเร็จ! สามารถเลือกชุดคำถามได้แล้ว', 'success');
-                } else {
-                    setPasscodeError('รหัสผ่านไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง');
+                    showToast(`✅ เข้าสู่ระบบสำเร็จ (${loggedInEmail})`, 'success');
+                } catch (err) {
+                    console.error("Firebase Auth Error:", err);
+                    let msg = 'เข้าสู่ระบบไม่สำเร็จ กรุณาตรวจสอบอีเมลและรหัสผ่าน';
+                    if (err.code === 'auth/invalid-email') {
+                        msg = 'รูปแบบอีเมลไม่ถูกต้อง';
+                    } else if (
+                        err.code === 'auth/user-not-found' ||
+                        err.code === 'auth/wrong-password' ||
+                        err.code === 'auth/invalid-credential'
+                    ) {
+                        msg = 'อีเมลหรือรหัสผ่านไม่ถูกต้อง';
+                    } else if (err.code === 'auth/too-many-requests') {
+                        msg = 'พยายามเข้าสู่ระบบผิดหลายครั้งเกินไป กรุณารอสักครู่แล้วลองใหม่';
+                    } else if (err.code === 'auth/api-key-not-valid.-please-pass-a-valid-api-key.') {
+                        msg = 'ค่า Web API Key ไม่ถูกต้อง กรุณาตรวจสอบตัวแปร DEFAULT_API_KEY';
+                    }
+                    setLoginError(msg);
                     playSound('wrong');
+                } finally {
+                    setIsLoggingIn(false);
                 }
             };
 
             // ออกจากระบบ Admin
-            const handleLogoutAdmin = () => {
+            const handleLogoutAdmin = async () => {
+                try {
+                    if (window.firebase && firebase.apps.length && DEFAULT_API_KEY && DEFAULT_API_KEY.trim()) {
+                        await firebase.auth().signOut();
+                    }
+                } catch (err) {
+                    console.error("Sign out error:", err);
+                }
                 setIsAdminAuth(false);
-                setPasscodeInput('');
+                setAdminUserEmail('');
+                setAdminPassword('');
                 setView('HOME');
                 showToast('ออกจากระบบ Admin แล้ว', 'info');
             };
@@ -816,6 +851,50 @@
                 }
             };
 
+            // บันทึกผลคะแนนสรุปลง Google Sheet อัตโนมัติผ่าน Google Apps Script
+            const handleSaveResultsToGoogleDrive = async () => {
+                if (!googleScriptUrl || !activeQuiz) return;
+                setIsSavingResults(true);
+                setSaveResultsMessage('⏳ กำลังสร้างไฟล์สรุปผลคะแนนลง Google Sheet...');
+
+                try {
+                    let latestPlayers = players;
+                    if (dbRef.current && pinCode) {
+                        const snap = await dbRef.current.ref('rooms/' + pinCode + '/players').once('value');
+                        const val = snap.val();
+                        if (val) {
+                            latestPlayers = Object.keys(val).map(id => ({ id, ...val[id] }));
+                        }
+                    }
+
+                    const payload = {
+                        action: 'SAVE_RESULTS',
+                        quizTitle: `${activeQuiz.title} (${quizMode === 'PRE_TEST' ? 'ก่อนอบรม' : 'หลังอบรม'})`,
+                        questions: activeQuiz.questions || [],
+                        players: latestPlayers.map(p => ({
+                            name: p.name,
+                            score: p.score || 0,
+                            playerAnswers: p.answersHistory || {}
+                        }))
+                    };
+
+                    await fetch(googleScriptUrl, {
+                        method: 'POST',
+                        mode: 'no-cors',
+                        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    setSaveResultsMessage('✅ ส่งข้อมูลสร้างไฟล์สรุปคะแนนลง Google Sheet ใน Google Drive เรียบร้อยแล้ว!');
+                    showToast('📊 บันทึกผลคะแนนลง Google Sheet สำเร็จ!', 'success');
+                } catch (err) {
+                    console.error('Save to Google Sheet error:', err);
+                    setSaveResultsMessage('⚠️ ไม่สามารถเชื่อมต่อ Google Sheet ได้: ' + err.message);
+                } finally {
+                    setIsSavingResults(false);
+                }
+            };
+
             // เข้าร่วมเล่นฝั่งพนักงาน (Player)
             const handlePlayerJoin = (e) => {
                 e.preventDefault();
@@ -963,8 +1042,8 @@
                         <div className="flex gap-2">
                             {isAdminAuth ? (
                                 <div className="flex items-center gap-2">
-                                    <span className="text-xs bg-green-500/20 text-green-400 px-3 py-1 rounded-full border border-green-500/30 flex items-center gap-1">
-                                        🔓 Admin Login อยู่
+                                    <span className="text-xs bg-green-500/20 text-green-400 px-3 py-1 rounded-full border border-green-500/30 flex items-center gap-1" title={adminUserEmail}>
+                                        🔓 {adminUserEmail || 'Admin Login อยู่'}
                                     </span>
                                     <button 
                                         onClick={() => setView('ADMIN_QUIZ_LIST')}
@@ -1078,45 +1157,64 @@
                                         </div>
                                     </div>
                                 ) : (
-                                    <div className="bg-slate-800/30 p-5 rounded-2xl border border-dashed border-slate-700/80 text-center space-y-2">
-                                        <p className="text-xs text-slate-400">
-                                            🔒 รายการชุดคำถามและปุ่มเปิดห้องสำหรับวิทยากร ถูกสงวนสิทธิ์ไว้เฉพาะ <strong className="text-slate-300">Admin ที่เข้าสู่ระบบแล้วเท่านั้น</strong>
+                                    <div className="bg-slate-800/40 p-5 rounded-2xl border border-slate-800 text-center space-y-2">
+                                        <p className="text-slate-400 text-xs">
+                                            🔒 ส่วนเลือกชุดคำถามและสร้างห้องแข่งขันสงวนสิทธิ์เฉพาะแอดมินและวิทยากรเท่านั้น
                                         </p>
                                         <button 
                                             onClick={() => setView('ADMIN_LOGIN')}
-                                            className="inline-flex items-center gap-1.5 text-xs font-bold bg-slate-800 hover:bg-slate-700 text-purple-300 px-4 py-2 rounded-xl border border-purple-500/30 transition">
-                                            🔑 เข้าสู่ระบบ Admin เพื่อเลือกชุดคำถาม
+                                            className="text-xs text-purple-400 hover:text-purple-300 font-bold underline">
+                                            คลิกที่นี่เพื่อเข้าสู่ระบบแอดมิน ➔
                                         </button>
                                     </div>
                                 )}
                             </div>
                         )}
 
-                        {/* 2. เข้าสู่ระบบแอดมิน ADMIN LOGIN */}
+                        {/* 2. เข้าสู่ระบบแอดมิน ADMIN LOGIN (Firebase Email & Password) */}
                         {view === 'ADMIN_LOGIN' && (
                             <div className="max-w-md mx-auto bg-slate-800 border border-slate-700 p-8 rounded-2xl shadow-2xl">
                                 <div className="text-center mb-6">
-                                    <div className="text-4xl mb-2">🔒</div>
+                                    <div className="text-4xl mb-2">🔐</div>
                                     <h2 className="text-2xl font-bold">เข้าสู่ระบบแอดมิน / วิทยากร</h2>
-                                    <p className="text-slate-400 text-sm mt-1">กรอกรหัสผ่านเพื่อดูชุดคำถามและเปิดห้องเล่นเกม</p>
+                                    <p className="text-slate-400 text-sm mt-1">ยืนยันตัวตนด้วยบัญชีผู้ดูแลระบบ (Firebase Auth)</p>
                                 </div>
+
+                                {(!DEFAULT_API_KEY || !DEFAULT_API_KEY.trim()) && (
+                                    <div className="bg-amber-950/80 border border-amber-500/60 text-amber-200 text-xs p-3 rounded-xl mb-4 leading-relaxed">
+                                        ⚠️ <strong>แจ้งเตือนการตั้งค่า:</strong> ยังไม่ได้ใส่ค่า <code>DEFAULT_API_KEY</code> ในไฟล์โค้ด กรุณานำ Web API Key จาก Firebase Console มาใส่ก่อนใช้งาน
+                                    </div>
+                                )}
 
                                 <form onSubmit={handleAdminLogin} className="space-y-4">
                                     <div>
-                                        <label className="block text-xs font-semibold text-slate-400 mb-1">Passcode รหัสผ่าน</label>
+                                        <label className="block text-xs font-semibold text-slate-400 mb-1">อีเมลแอดมิน (Email)</label>
                                         <input 
-                                            type="password"
-                                            value={passcodeInput}
-                                            onChange={(e) => setPasscodeInput(e.target.value)}
-                                            placeholder="กรอกรหัสผ่าน..."
-                                            className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-white text-center text-lg tracking-widest focus:outline-none focus:border-purple-500"
+                                            type="email"
+                                            value={adminEmail}
+                                            onChange={(e) => setAdminEmail(e.target.value)}
+                                            placeholder="admin@yourcompany.com"
+                                            className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-white text-sm focus:outline-none focus:border-purple-500"
                                             autoFocus
+                                            required
                                         />
                                     </div>
 
-                                    {passcodeError && (
+                                    <div>
+                                        <label className="block text-xs font-semibold text-slate-400 mb-1">รหัสผ่าน (Password)</label>
+                                        <input 
+                                            type="password"
+                                            value={adminPassword}
+                                            onChange={(e) => setAdminPassword(e.target.value)}
+                                            placeholder="กรอกรหัสผ่าน..."
+                                            className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-white text-sm focus:outline-none focus:border-purple-500"
+                                            required
+                                        />
+                                    </div>
+
+                                    {loginError && (
                                         <div className="bg-red-500/20 text-red-400 text-xs p-2.5 rounded-lg border border-red-500/30 text-center">
-                                            {passcodeError}
+                                            {loginError}
                                         </div>
                                     )}
 
@@ -1124,13 +1222,15 @@
                                         <button 
                                             type="button"
                                             onClick={() => setView('HOME')}
-                                            className="w-1/2 bg-slate-700 hover:bg-slate-600 py-2.5 rounded-lg text-sm font-semibold">
+                                            disabled={isLoggingIn}
+                                            className="w-1/2 bg-slate-700 hover:bg-slate-600 py-2.5 rounded-lg text-sm font-semibold disabled:opacity-50">
                                             ยกเลิก
                                         </button>
                                         <button 
                                             type="submit"
-                                            className="w-1/2 bg-purple-600 hover:bg-purple-500 py-2.5 rounded-lg text-sm font-bold">
-                                            ยืนยันรหัสผ่าน
+                                            disabled={isLoggingIn}
+                                            className="w-1/2 bg-purple-600 hover:bg-purple-500 py-2.5 rounded-lg text-sm font-bold disabled:opacity-50">
+                                            {isLoggingIn ? '⏳ กำลังตรวจสอบ...' : 'เข้าสู่ระบบ'}
                                         </button>
                                     </div>
                                 </form>
@@ -1169,10 +1269,10 @@
                                         <div className="flex items-center gap-3">
                                             <span className="text-2xl">⚠️</span>
                                             <div>
-                                                <strong className="text-amber-300 font-bold block mb-0.5">Firebase Permission Denied (ติดล็อกสิทธิ์การเข้าถึง):</strong>
-                                                <span>ฐานข้อมูล Firebase ยังไม่อนุญาตให้อ่าน/เขียน ข้อมูลจึงบันทึกลงในเครื่องนี้แทนชั่วคราว</span>
+                                                <strong className="text-amber-300 font-bold block mb-0.5">Firebase Permission Denied (ไม่มีสิทธิ์เขียนข้อมูล):</strong>
+                                                <span>กรุณาตรวจสอบว่าได้เข้าสู่ระบบด้วยอีเมลแอดมินที่ได้รับอนุญาตใน Firebase Rules แล้ว</span>
                                                 <div className="text-[11px] text-amber-400/90 mt-1">
-                                                    วิธีแก้: ไปที่ Firebase Console ➔ Realtime Database ➔ แท็บ <strong>Rules</strong> ➔ แก้เป็น <code>{`{ ".read": true, ".write": true }`}</code> แล้วกด <strong>Publish</strong>
+                                                    ตรวจสอบ Rules: <code>{`"quizzes": { ".read": true, ".write": "auth != null" }`}</code>
                                                 </div>
                                             </div>
                                         </div>
@@ -1181,7 +1281,7 @@
                                             target="_blank" 
                                             rel="noreferrer"
                                             className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-4 py-2 rounded-xl shrink-0 text-center transition">
-                                            ไปที่ Firebase Rules ➔
+                                            ไปที่ Firebase Console ➔
                                         </a>
                                     </div>
                                 )}
